@@ -52,6 +52,7 @@ class MessageOut(BaseModel):
     character_name: Optional[str] = None
     role: str
     content: str
+    image_url: Optional[str] = None  # 图片消息的图片URL，文字消息为null
     created_at: datetime
 
     model_config = {"from_attributes": True}

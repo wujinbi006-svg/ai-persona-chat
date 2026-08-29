@@ -1,5 +1,6 @@
 """
 流式聊天路由（多角色 + 多用户版）。
+支持图片生成：用户明确要求图片时，文字回复后自动生成角色图片。
 """
 import json
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,13 +13,24 @@ from ..services.context_service import build_context
 from ..services.llm_client import chat_stream, LLMError
 from ..services.stop_flags import set_stop, is_stopped, clear_stop
 from ..services.auth import get_current_user, check_rate_limit
+from ..services.image_service import detect_image_request, build_image_prompt, generate_image, ImageGenerationError
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+def _get_latest_user_message(history):
+    """从历史消息中获取最近一条用户消息。"""
+    for msg in reversed(history):
+        if msg.role == "user":
+            return msg.content
+    return ""
+
+
 def _stream_character_response(db, conversation_id, character, all_characters, user_id):
-    """生成单个角色的流式回复。"""
+    """生成单个角色的流式回复。如果用户要求图片，文字回复后生成图片。"""
     history = svc.get_messages(db, conversation_id, user_id=user_id)
+    latest_user_msg = _get_latest_user_message(history)
+    wants_image = detect_image_request(latest_user_msg)
 
     async def gen():
         messages = build_context(character, history, all_characters)
@@ -38,6 +50,63 @@ def _stream_character_response(db, conversation_id, character, all_characters, u
                     svc.add_message(db2, conversation_id, user_id, "assistant", full_content, character_id=character.id)
                 finally:
                     db2.close()
+
+            # ===== 图片生成：用户明确要求时才触发 =====
+            if wants_image:
+                yield f"data: {json.dumps({
+                    'type': 'image_start',
+                    'character_id': character.id,
+                    'character_name': character.name,
+                }, ensure_ascii=False)}\n\n"
+
+                try:
+                    # 重新获取最新历史（包含刚保存的文字回复）
+                    db3 = SessionLocal()
+                    try:
+                        latest_history = svc.get_messages(db3, conversation_id, user_id=user_id)
+                    finally:
+                        db3.close()
+
+                    # 构建图片 Prompt（基于角色外貌 + 当前场景）
+                    image_prompt = build_image_prompt(character, latest_history, latest_user_msg)
+
+                    # 调用图片生成 API，保存到本地
+                    image_url = await generate_image(image_prompt)
+
+                    # 保存图片消息（独立消息，文字和图片交替）
+                    db4 = SessionLocal()
+                    try:
+                        img_msg = svc.add_message(
+                            db4, conversation_id, user_id, "assistant",
+                            content="", character_id=character.id, image_url=image_url,
+                        )
+                        msg_id = img_msg.id
+                    finally:
+                        db4.close()
+
+                    yield f"data: {json.dumps({
+                        'type': 'image_done',
+                        'character_id': character.id,
+                        'character_name': character.name,
+                        'image_url': image_url,
+                        'message_id': msg_id,
+                    }, ensure_ascii=False)}\n\n"
+
+                except ImageGenerationError as e:
+                    yield f"data: {json.dumps({
+                        'type': 'image_error',
+                        'character_id': character.id,
+                        'character_name': character.name,
+                        'message': e.message,
+                    }, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({
+                        'type': 'image_error',
+                        'character_id': character.id,
+                        'character_name': character.name,
+                        'message': f'图片生成失败：{str(e)[:200]}',
+                    }, ensure_ascii=False)}\n\n"
+
             yield f"data: {json.dumps({
                 'type': 'character_done',
                 'character_id': character.id,

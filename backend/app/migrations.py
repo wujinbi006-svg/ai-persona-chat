@@ -4,6 +4,7 @@
 2. messages 表增加 character_id 列
 3. 所有表增加 user_id 列（第三阶段）
 4. 旧数据迁移
+5. messages 表增加 image_url 列（图片消息支持）
 """
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
@@ -24,6 +25,14 @@ def run_migrations():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE messages ADD COLUMN character_id INTEGER"))
             print("[Migration] messages.character_id added")
+
+    # messages.image_url（图片消息支持）
+    if "messages" in inspector.get_table_names():
+        cols = [c["name"] for c in inspector.get_columns("messages")]
+        if "image_url" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE messages ADD COLUMN image_url VARCHAR(500)"))
+            print("[Migration] messages.image_url added")
 
     # user_id 列（第三阶段）
     for table in ["conversations", "characters", "messages"]:

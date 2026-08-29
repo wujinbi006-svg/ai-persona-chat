@@ -21,6 +21,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingCharacter, setStreamingCharacter] = useState<{ id: number; name: string } | null>(null)
+  const [imageGeneratingCharacter, setImageGeneratingCharacter] = useState<{ id: number; name: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dark, setDark] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -77,6 +78,7 @@ export default function App() {
     setActiveId(id)
     setError(null)
     setStreamingContent('')
+    setImageGeneratingCharacter(null)
     setSpeaker('user')
     await loadConversationData(id)
     const chars = await api.listCharacters(id)
@@ -93,6 +95,7 @@ export default function App() {
     setCharacters([])
     setMessages([])
     setStreamingContent('')
+    setImageGeneratingCharacter(null)
     setError(null)
     setSpeaker('user')
     setView('setup')
@@ -166,21 +169,41 @@ export default function App() {
     setMessages([])
   }
 
+  // 通用：处理图片相关 SSE 事件
+  const handleImageChunk = (chunk: ChatStreamChunk) => {
+    if (chunk.type === 'image_start' && chunk.character_id && chunk.character_name) {
+      setImageGeneratingCharacter({ id: chunk.character_id, name: chunk.character_name })
+    } else if (chunk.type === 'image_done') {
+      setImageGeneratingCharacter(null)
+    } else if (chunk.type === 'image_error') {
+      setImageGeneratingCharacter(null)
+      setError(chunk.message || '图片生成失败')
+    }
+  }
+
   const handleSendUser = async (msg: string) => {
     if (!activeId) return
     const tempMsg: Message = {
       id: -Date.now(), conversation_id: activeId, character_id: null,
-      character_name: null, role: 'user', content: msg, created_at: new Date().toISOString(),
+      character_name: null, role: 'user', content: msg, image_url: null, created_at: new Date().toISOString(),
     }
     setMessages((prev) => [...prev, tempMsg])
     try {
-      for await (const _ of api.chatStream(activeId, msg)) { /* just done */ }
+      for await (const chunk of api.chatStream(activeId, msg)) {
+        handleImageChunk(chunk)
+        if (chunk.type === 'error') {
+          setError(chunk.message || '发送失败')
+          break
+        }
+      }
       const fresh = await api.getMessages(activeId)
       setMessages(fresh)
       await loadConversations()
     } catch (e: any) {
       setError(e?.message || '发送失败')
       setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id))
+    } finally {
+      setImageGeneratingCharacter(null)
     }
   }
 
@@ -199,6 +222,7 @@ export default function App() {
       let accumulated = ''
       for await (const chunk of api.chatStream(activeId, '（请基于当前对话继续发言）', charId)) {
         if (abortRef.current) break
+        handleImageChunk(chunk)
         if (chunk.type === 'content' && chunk.text) {
           accumulated += chunk.text
           setStreamingContent(accumulated)
@@ -216,6 +240,7 @@ export default function App() {
       setIsGenerating(false)
       setStreamingContent('')
       setStreamingCharacter(null)
+      setImageGeneratingCharacter(null)
       abortRef.current = false
     }
   }
@@ -230,6 +255,7 @@ export default function App() {
     try {
       for await (const chunk of api.replyAll(activeId)) {
         if (abortRef.current) { await api.stopGeneration(); break }
+        handleImageChunk(chunk)
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
@@ -252,6 +278,7 @@ export default function App() {
       setIsGenerating(false)
       setStreamingContent('')
       setStreamingCharacter(null)
+      setImageGeneratingCharacter(null)
       abortRef.current = false
     }
   }
@@ -266,6 +293,7 @@ export default function App() {
     try {
       for await (const chunk of api.discussion(activeId, charIds, rounds)) {
         if (abortRef.current) { await api.stopGeneration(); break }
+        handleImageChunk(chunk)
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
@@ -288,6 +316,7 @@ export default function App() {
       setIsGenerating(false)
       setStreamingContent('')
       setStreamingCharacter(null)
+      setImageGeneratingCharacter(null)
       abortRef.current = false
     }
   }
@@ -365,6 +394,7 @@ export default function App() {
             onEditCharacter={handleEditCharacter}
             onDeleteCharacter={handleDeleteCharacter}
             onClearMessages={handleClearMessages}
+            imageGeneratingCharacter={imageGeneratingCharacter}
           />
         ) : (
           <CharacterSetup

@@ -33,5 +33,12 @@ class Settings:
     # 限流
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 
+    # 图片生成（豆包视觉 / 火山方舟）
+    DOUBAO_VISION_API_KEY: str = os.getenv("DOUBAO_VISION_API_KEY", "")
+    DOUBAO_VISION_BASE_URL: str = os.getenv("DOUBAO_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+    DOUBAO_VISION_MODEL: str = os.getenv("DOUBAO_VISION_MODEL", "")
+    IMAGE_OUTPUT_DIR: str = os.getenv("IMAGE_OUTPUT_DIR", "data/generated_images")
+    IMAGE_TIMEOUT: float = float(os.getenv("IMAGE_TIMEOUT", "120"))
+
 
 settings = Settings()

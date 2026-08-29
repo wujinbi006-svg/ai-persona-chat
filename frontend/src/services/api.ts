@@ -3,6 +3,18 @@ import { authService } from './auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://ai-persona-backend-znpi.onrender.com/api'
 
+// 后端源地址（去掉 /api 后缀），用于拼接静态图片 URL
+export const BACKEND_ORIGIN = API_BASE.replace(/\/api\/?$/, '')
+
+// 将后端返回的相对图片 URL 转为完整可访问 URL
+export function resolveImageUrl(imageUrl: string | null | undefined): string {
+  if (!imageUrl) return ''
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://') || imageUrl.startsWith('data:')) {
+    return imageUrl
+  }
+  return `${BACKEND_ORIGIN}${imageUrl.startsWith('/') ? '' : '/'}${imageUrl}`
+}
+
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (authService.isSupabaseMode()) {

@@ -43,6 +43,7 @@ class Message(Base):
     character_id = Column(Integer, ForeignKey("characters.id"), nullable=True)
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)  # 图片消息的图片URL，文字消息为NULL
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")

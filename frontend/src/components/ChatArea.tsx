@@ -24,6 +24,7 @@ interface Props {
   onEditCharacter: (id: number, name: string, persona: string) => void
   onDeleteCharacter: (id: number) => void
   onClearMessages: () => void
+  imageGeneratingCharacter: { id: number; name: string } | null
 }
 
 export default function ChatArea(props: Props) {
@@ -31,7 +32,7 @@ export default function ChatArea(props: Props) {
     conversation, characters, messages, streamingContent, streamingCharacter,
     isGenerating, error, speaker, onSpeakerChange, onSendUser, onGenerateCharacter,
     onReplyAll, onStartDiscussion, onStop, onAddCharacter, onEditCharacter,
-    onDeleteCharacter, onClearMessages,
+    onDeleteCharacter, onClearMessages, imageGeneratingCharacter,
   } = props
 
   const [charModalOpen, setCharModalOpen] = useState(false)
@@ -120,6 +121,7 @@ export default function ChatArea(props: Props) {
         streamingCharacter={streamingCharacter}
         isGenerating={isGenerating}
         error={error}
+        imageGeneratingCharacter={imageGeneratingCharacter}
       />
 
       {/* 输入区 */}

@@ -1,5 +1,7 @@
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from .database import engine, Base
 from .migrations import run_migrations
 from .routers import conversations, chat, characters
@@ -8,7 +10,7 @@ from .config import settings
 Base.metadata.create_all(bind=engine)
 run_migrations()
 
-app = FastAPI(title="AI 人格聊天平台", version="3.0.0")
+app = FastAPI(title="AI 人格聊天平台", version="3.1.0")
 
 # CORS
 if settings.USE_SUPABASE and settings.FRONTEND_URL:
@@ -23,6 +25,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 静态文件：生成的图片
+_image_dir = Path(settings.IMAGE_OUTPUT_DIR)
+if not _image_dir.is_absolute():
+    _image_dir = Path(__file__).resolve().parent.parent / _image_dir
+_image_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/images", StaticFiles(directory=str(_image_dir)), name="generated_images")
 
 app.include_router(conversations.router)
 app.include_router(characters.router)

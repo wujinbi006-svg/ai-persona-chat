@@ -116,8 +116,27 @@ def get_messages(db: Session, conversation_id: int, user_id: Optional[str] = Non
     return q.order_by(Message.id).all()
 
 
-def add_message(db: Session, conversation_id: int, user_id: str, role: str, content: str, character_id: Optional[int] = None) -> Message:
-    msg = Message(conversation_id=conversation_id, user_id=user_id, role=role, content=content, character_id=character_id)
+def add_message(
+    db: Session,
+    conversation_id: int,
+    user_id: str,
+    role: str,
+    content: str,
+    character_id: Optional[int] = None,
+    image_url: Optional[str] = None,
+) -> Message:
+    """
+    添加消息。支持图片消息：image_url 非空时为图片消息。
+    图片消息的 content 可以是图片说明文字或空字符串。
+    """
+    msg = Message(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        role=role,
+        content=content,
+        character_id=character_id,
+        image_url=image_url,
+    )
     db.add(msg)
     touch_conversation(db, conversation_id)
     db.refresh(msg)
@@ -154,5 +173,6 @@ def message_to_out(msg: Message, db: Session) -> dict:
         "character_name": char_name,
         "role": msg.role,
         "content": msg.content,
+        "image_url": msg.image_url,
         "created_at": msg.created_at,
     }
