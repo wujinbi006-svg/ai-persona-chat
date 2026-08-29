@@ -24,7 +24,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [dark, setDark] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [hash, setHash] = useState(window.location.hash)
   const abortRef = useRef(false)
+
+  useEffect(() => {
+    const onHashChange = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
   const activeConversation = conversations.find((c) => c.id === activeId) || null
 
@@ -33,7 +40,6 @@ export default function App() {
     return <div className="h-full flex items-center justify-center text-gray-500">加载中…</div>
   }
   if (isSupabaseMode && !user) {
-    const hash = window.location.hash
     if (hash === '#register') return <RegisterPage />
     return <LoginPage />
   }
@@ -169,7 +175,6 @@ export default function App() {
     }
     setMessages((prev) => [...prev, tempMsg])
     try {
-      // 用 chatStream 不传 character_id，只保存消息
       for await (const _ of api.chatStream(activeId, msg)) { /* just done */ }
       const fresh = await api.getMessages(activeId)
       setMessages(fresh)
@@ -193,10 +198,6 @@ export default function App() {
     abortRef.current = false
 
     try {
-      // 发一条空触发消息？不，直接用最近的上下文让角色回复
-      // 用 chatStream 传一个空消息不行，需要传 message
-      // 这里我们不传用户消息，只让角色基于上下文回复
-      // 但 API 要求 message 非空，所以传一个提示
       let accumulated = ''
       for await (const chunk of api.chatStream(activeId, '（请基于当前对话继续发言）', charId)) {
         if (abortRef.current) break
@@ -243,7 +244,6 @@ export default function App() {
           accumulated += chunk.text
           setStreamingContent(accumulated)
         } else if (chunk.type === 'character_done') {
-          // 角色完成，刷新消息列表
           const fresh = await api.getMessages(activeId)
           setMessages(fresh)
         } else if (chunk.type === 'error') {
