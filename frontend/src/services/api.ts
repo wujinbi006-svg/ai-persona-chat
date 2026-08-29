@@ -1,7 +1,7 @@
 import type { Conversation, Character, Message, ChatStreamChunk } from '../types'
 import { authService } from './auth'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://ai-persona-backend-znpi.onrender.com/api'
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
