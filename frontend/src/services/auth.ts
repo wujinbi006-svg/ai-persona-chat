@@ -1,5 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
+// 注意：VITE_SUPABASE_ANON_KEY 是公开的 anon key，不是 Secret
+// 真正的 Secret（OPENAI_API_KEY、SUPABASE_SERVICE_ROLE_KEY、DATABASE_URL）只存在后端
 const USE_SUPABASE = import.meta.env.VITE_USE_SUPABASE === 'true' || true
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://hduxrpsfgacdthgpdjxk.supabase.co'
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhkdXhycHNmZ2FjZHRoZ3BkanhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0Njc0NjUsImV4cCI6MjEwMTA0MzQ2NX0.T_pmgnU38jevz5mM1tvsJAGDkESm3jXdnzCKq2vyaac'
