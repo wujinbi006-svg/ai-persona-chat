@@ -27,22 +27,12 @@ export default function App() {
   const [hash, setHash] = useState(window.location.hash)
   const abortRef = useRef(false)
 
+  // 所有 Hooks 必须在条件返回之前调用
   useEffect(() => {
     const onHashChange = () => setHash(window.location.hash)
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
-
-  const activeConversation = conversations.find((c) => c.id === activeId) || null
-
-  // 认证守卫：Supabase 模式下未登录显示登录页
-  if (loading) {
-    return <div className="h-full flex items-center justify-center text-gray-500">加载中…</div>
-  }
-  if (isSupabaseMode && !user) {
-    if (hash === '#register') return <RegisterPage />
-    return <LoginPage />
-  }
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -72,13 +62,23 @@ export default function App() {
     }
   }, [])
 
+  const activeConversation = conversations.find((c) => c.id === activeId) || null
+
+  // 认证守卫：Supabase 模式下未登录显示登录页
+  if (loading) {
+    return <div className="h-full flex items-center justify-center text-gray-500">加载中…</div>
+  }
+  if (isSupabaseMode && !user) {
+    if (hash === '#register') return <RegisterPage />
+    return <LoginPage />
+  }
+
   const handleSelect = async (id: number) => {
     setActiveId(id)
     setError(null)
     setStreamingContent('')
     setSpeaker('user')
     await loadConversationData(id)
-    const conv = conversations.find((c) => c.id === id)
     const chars = await api.listCharacters(id)
     if (chars.length === 0) {
       setView('setup')
@@ -166,7 +166,6 @@ export default function App() {
     setMessages([])
   }
 
-  // 发送用户消息（不触发 AI）
   const handleSendUser = async (msg: string) => {
     if (!activeId) return
     const tempMsg: Message = {
@@ -185,7 +184,6 @@ export default function App() {
     }
   }
 
-  // 让指定角色生成回复
   const handleGenerateCharacter = async (charId: number) => {
     if (!activeId || isGenerating) return
     const char = characters.find((c) => c.id === charId)
@@ -222,7 +220,6 @@ export default function App() {
     }
   }
 
-  // 全部 AI 回复
   const handleReplyAll = async () => {
     if (!activeId || isGenerating) return
     setIsGenerating(true)
@@ -231,18 +228,13 @@ export default function App() {
     abortRef.current = false
 
     try {
-      let currentChar: { id: number; name: string } | null = null
-      let accumulated = ''
       for await (const chunk of api.replyAll(activeId)) {
         if (abortRef.current) { await api.stopGeneration(); break }
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
-          currentChar = { id: chunk.character_id, name: chunk.character_name }
-          setStreamingCharacter(currentChar)
-          accumulated = ''
+          setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
-          accumulated += chunk.text
-          setStreamingContent(accumulated)
+          setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
           const fresh = await api.getMessages(activeId)
           setMessages(fresh)
@@ -264,7 +256,6 @@ export default function App() {
     }
   }
 
-  // 自由讨论
   const handleStartDiscussion = async (charIds: number[], rounds: number) => {
     if (!activeId || isGenerating) return
     setIsGenerating(true)
@@ -273,16 +264,13 @@ export default function App() {
     abortRef.current = false
 
     try {
-      let accumulated = ''
       for await (const chunk of api.discussion(activeId, charIds, rounds)) {
         if (abortRef.current) { await api.stopGeneration(); break }
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
-          accumulated = ''
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
-          accumulated += chunk.text
-          setStreamingContent(accumulated)
+          setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
           const fresh = await api.getMessages(activeId)
           setMessages(fresh)
