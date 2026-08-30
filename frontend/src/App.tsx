@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { Conversation, Character, Message, Speaker, ChatStreamChunk } from './types'
+import type { Conversation, Character, Message, Speaker, ChatMode, ChatStreamChunk } from './types'
 import { api } from './services/api'
 import { useAuth } from './contexts/AuthContext'
 import Sidebar from './components/Sidebar'
@@ -18,6 +18,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [view, setView] = useState<View>('setup')
   const [speaker, setSpeaker] = useState<Speaker>('user')
+  const [mode, setMode] = useState<ChatMode>('manual')
   const [isGenerating, setIsGenerating] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingCharacter, setStreamingCharacter] = useState<{ id: number; name: string } | null>(null)
@@ -27,6 +28,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [hash, setHash] = useState(window.location.hash)
   const abortRef = useRef(false)
+
+  // 戏剧模式状态
+  const [isDramaActive, setIsDramaActive] = useState(false)
+  const [dramaRound, setDramaRound] = useState(0)
 
   // 所有 Hooks 必须在条件返回之前调用
   useEffect(() => {
@@ -52,10 +57,12 @@ export default function App() {
 
   const loadConversationData = useCallback(async (id: number) => {
     try {
-      const [chars, msgs] = await Promise.all([
+      const [conv, chars, msgs] = await Promise.all([
+        api.getConversation(id),
         api.listCharacters(id),
         api.getMessages(id),
       ])
+      setConversations((prev) => prev.map((c) => (c.id === id ? conv : c)))
       setCharacters(chars)
       setMessages(msgs)
     } catch (e) {
@@ -65,7 +72,7 @@ export default function App() {
 
   const activeConversation = conversations.find((c) => c.id === activeId) || null
 
-  // 认证守卫：Supabase 模式下未登录显示登录页
+  // 认证守卫
   if (loading) {
     return <div className="h-full flex items-center justify-center text-gray-500">加载中…</div>
   }
@@ -80,6 +87,9 @@ export default function App() {
     setStreamingContent('')
     setImageGeneratingCharacter(null)
     setSpeaker('user')
+    setMode('manual')
+    setIsDramaActive(false)
+    setDramaRound(0)
     await loadConversationData(id)
     const chars = await api.listCharacters(id)
     if (chars.length === 0) {
@@ -98,6 +108,9 @@ export default function App() {
     setImageGeneratingCharacter(null)
     setError(null)
     setSpeaker('user')
+    setMode('manual')
+    setIsDramaActive(false)
+    setDramaRound(0)
     setView('setup')
     setSidebarOpen(false)
   }
@@ -148,6 +161,28 @@ export default function App() {
     }
   }
 
+  const handleMoveCharacter = async (id: number, direction: 'up' | 'down') => {
+    try {
+      await api.moveCharacter(id, direction)
+      if (activeId) {
+        const chars = await api.listCharacters(activeId)
+        setCharacters(chars)
+      }
+    } catch (e) {
+      console.error('移动角色失败', e)
+    }
+  }
+
+  const handleUpdateScene = async (scene: string, sceneTime: string, sceneContext: string) => {
+    if (!activeId) return
+    try {
+      const conv = await api.updateConversation(activeId, { scene, scene_time: sceneTime, scene_context: sceneContext })
+      setConversations((prev) => prev.map((c) => (c.id === activeId ? conv : c)))
+    } catch (e) {
+      setError('保存场景失败')
+    }
+  }
+
   const handleEnterChat = () => {
     setView('chat')
   }
@@ -189,9 +224,19 @@ export default function App() {
     }
     setMessages((prev) => [...prev, tempMsg])
     try {
-      for await (const chunk of api.chatStream(activeId, msg)) {
+      for await (const chunk of api.chatStream(activeId, msg, undefined, mode)) {
         handleImageChunk(chunk)
-        if (chunk.type === 'error') {
+        if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
+          setStreamingContent('')
+        } else if (chunk.type === 'content' && chunk.text) {
+          setStreamingContent((prev) => prev + chunk.text)
+        } else if (chunk.type === 'character_done') {
+          const fresh = await api.getMessages(activeId)
+          setMessages(fresh)
+          setStreamingContent('')
+          setStreamingCharacter(null)
+        } else if (chunk.type === 'error') {
           setError(chunk.message || '发送失败')
           break
         }
@@ -203,6 +248,8 @@ export default function App() {
       setError(e?.message || '发送失败')
       setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id))
     } finally {
+      setStreamingContent('')
+      setStreamingCharacter(null)
       setImageGeneratingCharacter(null)
     }
   }
@@ -321,6 +368,81 @@ export default function App() {
     }
   }
 
+  // 戏剧模式
+  const handleStartDrama = async (
+    charIds: number[], rounds: number, interval: number,
+    scene: string, sceneTime: string, sceneContext: string
+  ) => {
+    if (!activeId || isGenerating) return
+    setIsGenerating(true)
+    setIsDramaActive(true)
+    setDramaRound(1)
+    setError(null)
+    setStreamingContent('')
+    abortRef.current = false
+
+    try {
+      for await (const chunk of api.dramaStream(activeId, charIds, rounds, interval, scene, sceneTime, sceneContext)) {
+        if (abortRef.current) { await api.dramaStop(); break }
+        handleImageChunk(chunk)
+        if (chunk.type === 'round_start' && chunk.round) {
+          setDramaRound(chunk.round)
+        } else if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
+          setStreamingContent('')
+        } else if (chunk.type === 'content' && chunk.text) {
+          setStreamingContent((prev) => prev + chunk.text)
+        } else if (chunk.type === 'character_done') {
+          const fresh = await api.getMessages(activeId)
+          setMessages(fresh)
+        } else if (chunk.type === 'drama_done' || chunk.type === 'done') {
+          // 戏剧结束
+        } else if (chunk.type === 'error') {
+          setError(chunk.message || '戏剧出错')
+          break
+        }
+      }
+      const fresh = await api.getMessages(activeId)
+      setMessages(fresh)
+      await loadConversations()
+      await loadConversationData(activeId)
+    } catch (e: any) {
+      setError(e?.message || '戏剧失败')
+    } finally {
+      setIsGenerating(false)
+      setIsDramaActive(false)
+      setDramaRound(0)
+      setStreamingContent('')
+      setStreamingCharacter(null)
+      setImageGeneratingCharacter(null)
+      abortRef.current = false
+    }
+  }
+
+  const handleDramaPause = () => { api.dramaPause().catch(() => {}) }
+  const handleDramaResume = () => { api.dramaResume().catch(() => {}) }
+  const handleDramaStop = () => {
+    abortRef.current = true
+    api.dramaStop().catch(() => {})
+  }
+
+  const handleDramaInterject = async (message: string) => {
+    if (!activeId) return
+    const tempMsg: Message = {
+      id: -Date.now(), conversation_id: activeId, character_id: null,
+      character_name: null, role: 'user', content: message, image_url: null, created_at: new Date().toISOString(),
+    }
+    setMessages((prev) => [...prev, tempMsg])
+    try {
+      await api.dramaInterject(activeId, message)
+      const fresh = await api.getMessages(activeId)
+      setMessages(fresh)
+    } catch (e) {
+      setError('插话失败')
+      setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id))
+    }
+  }
+
   const handleStop = () => {
     abortRef.current = true
     api.stopGeneration().catch(() => {})
@@ -372,6 +494,7 @@ export default function App() {
             onAddCharacter={handleAddCharacter}
             onEditCharacter={handleEditCharacter}
             onDeleteCharacter={handleDeleteCharacter}
+            onMoveCharacter={handleMoveCharacter}
             onEnterChat={handleEnterChat}
           />
         ) : activeConversation ? (
@@ -384,15 +507,26 @@ export default function App() {
             isGenerating={isGenerating}
             error={error}
             speaker={speaker}
+            mode={mode}
+            isDramaActive={isDramaActive}
+            dramaRound={dramaRound}
             onSpeakerChange={setSpeaker}
+            onModeChange={setMode}
             onSendUser={handleSendUser}
             onGenerateCharacter={handleGenerateCharacter}
             onReplyAll={handleReplyAll}
             onStartDiscussion={handleStartDiscussion}
+            onStartDrama={handleStartDrama}
+            onDramaPause={handleDramaPause}
+            onDramaResume={handleDramaResume}
+            onDramaStop={handleDramaStop}
+            onDramaInterject={handleDramaInterject}
             onStop={handleStop}
             onAddCharacter={handleAddCharacter}
             onEditCharacter={handleEditCharacter}
             onDeleteCharacter={handleDeleteCharacter}
+            onMoveCharacter={handleMoveCharacter}
+            onUpdateScene={handleUpdateScene}
             onClearMessages={handleClearMessages}
             imageGeneratingCharacter={imageGeneratingCharacter}
           />
@@ -403,6 +537,7 @@ export default function App() {
             onAddCharacter={handleAddCharacter}
             onEditCharacter={handleEditCharacter}
             onDeleteCharacter={handleDeleteCharacter}
+            onMoveCharacter={handleMoveCharacter}
             onEnterChat={handleEnterChat}
           />
         )}

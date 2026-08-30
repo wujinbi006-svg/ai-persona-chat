@@ -1,12 +1,10 @@
-import type { Conversation, Character, Message, ChatStreamChunk } from '../types'
+import type { Conversation, Character, Message, Memory, ChatStreamChunk } from '../types'
 import { authService } from './auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://ai-persona-backend-znpi.onrender.com/api'
 
-// 后端源地址（去掉 /api 后缀），用于拼接静态图片 URL
 export const BACKEND_ORIGIN = API_BASE.replace(/\/api\/?$/, '')
 
-// 将后端返回的相对图片 URL 转为完整可访问 URL
 export function resolveImageUrl(imageUrl: string | null | undefined): string {
   if (!imageUrl) return ''
   if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://') || imageUrl.startsWith('data:')) {
@@ -68,10 +66,10 @@ export const api = {
     }),
   listConversations: () => request<Conversation[]>('/conversations'),
   getConversation: (id: number) => request<Conversation>(`/conversations/${id}`),
-  updateConversation: (id: number, title: string) =>
+  updateConversation: (id: number, data: { title?: string; scene?: string; scene_time?: string; scene_context?: string }) =>
     request<Conversation>(`/conversations/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(data),
     }),
   deleteConversation: (id: number) =>
     request<{ ok: boolean }>(`/conversations/${id}`, { method: 'DELETE' }),
@@ -84,26 +82,49 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, persona }),
     }),
-  updateCharacter: (charId: number, data: { name?: string; persona?: string }) =>
+  updateCharacter: (charId: number, data: { name?: string; persona?: string; sort_order?: number }) =>
     request<Character>(`/characters/${charId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
   deleteCharacter: (charId: number) =>
     request<{ ok: boolean }>(`/characters/${charId}`, { method: 'DELETE' }),
+  moveCharacter: (charId: number, direction: 'up' | 'down') =>
+    request<Character>(`/characters/${charId}/move?direction=${direction}`, { method: 'POST' }),
+
+  // 记忆
+  listCharacterMemories: (charId: number) =>
+    request<Memory[]>(`/characters/${charId}/memories`),
+  listConversationMemories: (convId: number) =>
+    request<Memory[]>(`/conversations/${convId}/memories`),
+  createCharacterMemory: (charId: number, data: { content: string; memory_type?: string; importance?: number }) =>
+    request<Memory>(`/characters/${charId}/memories`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateMemory: (memoryId: number, data: { content?: string; memory_type?: string; importance?: number; is_active?: boolean }) =>
+    request<Memory>(`/memories/${memoryId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteMemory: (memoryId: number) =>
+    request<{ ok: boolean }>(`/memories/${memoryId}`, { method: 'DELETE' }),
 
   // 消息
   getMessages: (id: number) => request<Message[]>(`/conversations/${id}/messages`),
   clearMessages: (id: number) =>
     request<{ ok: boolean; deleted: number }>(`/conversations/${id}/messages`, { method: 'DELETE' }),
 
-  // 聊天流式
-  async *chatStream(conversationId: number, message: string, characterId?: number) {
+  // 聊天流式（支持 @角色 和智能模式）
+  async *chatStream(conversationId: number, message: string, characterId?: number, mode?: string) {
     const headers = await getAuthHeaders()
+    const body: any = { conversation_id: conversationId, message }
+    if (characterId) body.character_id = characterId
+    if (mode) body.mode = mode
     const res = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ conversation_id: conversationId, message, character_id: characterId }),
+      body: JSON.stringify(body),
     })
     if (!res.ok) throw new Error(`请求失败 (${res.status})`)
     yield* parseSSE(res)
@@ -132,6 +153,35 @@ export const api = {
     if (!res.ok) throw new Error(`请求失败 (${res.status})`)
     yield* parseSSE(res)
   },
+
+  // 戏剧模式
+  async *dramaStream(conversationId: number, characterIds: number[], rounds: number, interval: number, scene?: string, sceneTime?: string, sceneContext?: string) {
+    const headers = await getAuthHeaders()
+    const body: any = {
+      conversation_id: conversationId,
+      character_ids: characterIds,
+      rounds,
+      interval,
+    }
+    if (scene !== undefined) body.scene = scene
+    if (sceneTime !== undefined) body.scene_time = sceneTime
+    if (sceneContext !== undefined) body.scene_context = sceneContext
+    const res = await fetch(`${API_BASE}/chat/drama/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+    yield* parseSSE(res)
+  },
+  dramaPause: () => request<{ ok: boolean }>('/chat/drama/pause', { method: 'POST' }),
+  dramaResume: () => request<{ ok: boolean }>('/chat/drama/resume', { method: 'POST' }),
+  dramaStop: () => request<{ ok: boolean }>('/chat/drama/stop', { method: 'POST' }),
+  dramaInterject: (conversationId: number, message: string) =>
+    request<{ ok: boolean }>('/chat/drama/interject', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId, message }),
+    }),
 
   // 停止
   stopGeneration: () =>

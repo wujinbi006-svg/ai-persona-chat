@@ -31,7 +31,13 @@ def get_conversation(conv_id: int, db: Session = Depends(get_db), current_user: 
 
 @router.patch("/{conv_id}", response_model=ConversationOut)
 def update_conversation(conv_id: int, body: ConversationUpdate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    conv = svc.update_conversation(db, conv_id, user_id=current_user["id"], title=body.title)
+    conv = svc.update_conversation(
+        db, conv_id, user_id=current_user["id"],
+        title=body.title,
+        scene=body.scene,
+        scene_time=body.scene_time,
+        scene_context=body.scene_context,
+    )
     if not conv:
         raise HTTPException(status_code=404, detail="会话不存在")
     return conv

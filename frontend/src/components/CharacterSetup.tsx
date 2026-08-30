@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Character } from '../types'
 import CharacterModal from './CharacterModal'
+import MemoryPanel from './MemoryPanel'
 
 interface Props {
   conversationId: number
@@ -8,6 +9,7 @@ interface Props {
   onAddCharacter: (name: string, persona: string) => void
   onEditCharacter: (id: number, name: string, persona: string) => void
   onDeleteCharacter: (id: number) => void
+  onMoveCharacter: (id: number, direction: 'up' | 'down') => void
   onEnterChat: () => void
 }
 
@@ -17,11 +19,13 @@ export default function CharacterSetup({
   onAddCharacter,
   onEditCharacter,
   onDeleteCharacter,
+  onMoveCharacter,
   onEnterChat,
 }: Props) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingChar, setEditingChar] = useState<Character | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
+  const [memoryChar, setMemoryChar] = useState<Character | null>(null)
 
   const handleSave = (name: string, persona: string) => {
     if (editingChar) {
@@ -38,7 +42,7 @@ export default function CharacterSetup({
       <div className="w-full max-w-2xl">
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-2 text-center">角色设置</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 text-center">
-          添加一个或多个 AI 角色，每个角色有独立人格，共享同一个聊天室。
+          添加一个或多个 AI 角色，每个角色有独立人格，共享同一个聊天室。使用 ↑↓ 调整角色顺序。
         </p>
 
         {/* 角色列表 */}
@@ -48,8 +52,25 @@ export default function CharacterSetup({
               <p className="text-gray-400 dark:text-gray-500 text-sm">暂无角色，点击下方按钮添加</p>
             </div>
           )}
-          {characters.map((c) => (
+          {characters.map((c, idx) => (
             <div key={c.id} className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+              {/* 排序按钮 */}
+              <div className="flex flex-col gap-0.5 shrink-0">
+                <button
+                  onClick={() => onMoveCharacter(c.id, 'up')}
+                  disabled={idx === 0}
+                  className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 text-sm px-1"
+                >
+                  ↑
+                </button>
+                <button
+                  onClick={() => onMoveCharacter(c.id, 'down')}
+                  disabled={idx === characters.length - 1}
+                  className="text-gray-400 hover:text-indigo-600 disabled:opacity-30 text-sm px-1"
+                >
+                  ↓
+                </button>
+              </div>
               <div className="w-10 h-10 rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold text-sm shrink-0">
                 {c.name.charAt(0)}
               </div>
@@ -58,6 +79,12 @@ export default function CharacterSetup({
                 <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{c.persona.slice(0, 60)}…</div>
               </div>
               <div className="flex gap-1 shrink-0">
+                <button
+                  onClick={() => setMemoryChar(c)}
+                  className="px-2.5 py-1.5 rounded-lg text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                >
+                  🧠 记忆
+                </button>
                 <button
                   onClick={() => { setEditingChar(c); setModalOpen(true) }}
                   className="px-2.5 py-1.5 rounded-lg text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -110,6 +137,10 @@ export default function CharacterSetup({
         onSave={handleSave}
         onClose={() => { setModalOpen(false); setEditingChar(null) }}
       />
+
+      {memoryChar && (
+        <MemoryPanel character={memoryChar} onClose={() => setMemoryChar(null)} />
+      )}
     </div>
   )
 }
