@@ -55,12 +55,27 @@ def run_migrations():
                     conn.execute(text(f"ALTER TABLE messages ADD COLUMN {field} {field_type}"))
                 print(f"[Migration] messages.{field} added (Phase 3)")
 
-        # 为 generation_id 创建索引（如果不存在）
+    # 为 generation_id 创建索引（如果不存在）
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_generation_id ON messages (generation_id)"))
+    except Exception:
+        pass
+
+    # Phase 8: generation_sessions 表的数据库级唯一性约束
+    # 保证同一个 conversation 同时只能有一个 active generation（running/paused/stopping）
+    # 使用部分唯一索引（PostgreSQL 和 SQLite 都支持）
+    if "generation_sessions" in inspector.get_table_names():
         try:
             with engine.begin() as conn:
-                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_generation_id ON messages (generation_id)"))
-        except Exception:
-            pass
+                conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_active_generation_per_conversation
+                    ON generation_sessions (conversation_id)
+                    WHERE status IN ('running', 'paused', 'stopping')
+                """))
+            print("[Migration] generation_sessions active unique index added (Phase 8)")
+        except Exception as e:
+            print(f"[Migration] Warning: could not create active generation unique index: {e}")
 
     # characters.sort_order
     if "characters" in inspector.get_table_names():

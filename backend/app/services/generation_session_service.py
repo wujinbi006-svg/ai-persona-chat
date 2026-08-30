@@ -5,14 +5,17 @@ Phase 3: GenerationSession 持久化服务。
 - 内存锁：快速拒绝并发请求（单进程内）
 - 数据库持久化：跨请求追踪状态、剧情模式暂停/继续、崩溃恢复
 
+Phase 8: 添加数据库级唯一性约束（部分唯一索引），保证多实例环境下的安全性。
+
 核心保证：同一个 conversation 同一时间最多一个 active generation。
 """
 import json
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from ..models.conversation import GenerationSession as GenerationSessionModel
-from ..services.orchestrator import GenerationSession as MemorySession, GenerationStatus
+from ..services.orchestrator import GenerationSession as MemorySession, GenerationStatus, GenerationConflictError
 
 
 ACTIVE_STATUSES = ["running", "paused", "stopping"]
@@ -44,24 +47,41 @@ def create_session(
 ) -> GenerationSessionModel:
     """创建新的生成会话。
 
+    Phase 8: 使用数据库事务 + 部分唯一索引保证原子性。
+    如果同一个 conversation 已有 active generation，会抛出 IntegrityError。
+    调用方应先调用 get_active_session 检查，或捕获 IntegrityError。
+
     调用前应先检查 get_active_session，确保没有活跃会话。
     """
-    session = GenerationSessionModel(
-        generation_id=generation_id,
-        conversation_id=conversation_id,
-        user_id=user_id,
-        mode=mode,
-        strategy=strategy,
-        status="idle",
-        speakers=json.dumps(speakers or []),
-        user_message=user_message,
-        drama_config=json.dumps(drama_config) if drama_config else None,
-        started_at=datetime.utcnow(),
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session
+    try:
+        session = GenerationSessionModel(
+            generation_id=generation_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            mode=mode,
+            strategy=strategy,
+            status="idle",
+            speakers=json.dumps(speakers or []),
+            user_message=user_message,
+            drama_config=json.dumps(drama_config) if drama_config else None,
+            started_at=datetime.utcnow(),
+        )
+        db.add(session)
+        db.flush()  # 触发唯一索引检查
+        # 先设置为 running，触发部分唯一索引
+        session.status = "running"
+        db.flush()
+        db.commit()
+        db.refresh(session)
+        return session
+    except Exception as e:
+        db.rollback()
+        # 检查是否是唯一索引冲突
+        if "unique" in str(e).lower() or "UNIQUE" in str(e):
+            raise GenerationConflictError(
+                f"会话 {conversation_id} 已有活跃的生成任务（数据库级约束）",
+            )
+        raise
 
 
 def update_session_status(
