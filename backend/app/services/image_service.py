@@ -49,50 +49,98 @@ def detect_image_request(message: str) -> bool:
 
 # ===== 图片 Prompt 构建 =====
 
-def _extract_appearance_from_persona(persona: str) -> str:
+def _extract_appearance_keywords(persona: str) -> str:
     """
-    从角色人格描述中提取外貌相关信息。
-    简单策略：查找包含外貌关键词的句子。
+    从角色人格描述中提取纯外貌关键词，只保留外貌相关，过滤人格/性格/关系。
+    返回英文关键词列表形式的描述。
     """
-    appearance_keywords = [
-        "头发", "发型", "发色", "眼睛", "肤色", "身高", "身材", "穿着",
-        "服装", "衣服", "裙子", "裤子", "衬衫", "外套", "鞋子", "饰品",
-        "项链", "耳环", "眼镜", "帽子", "围巾", "手套", "纹身", "疤痕",
-        "年龄", "长相", "外貌", "面容", "五官", "气质", "颜值", "美丽",
-        "帅气", "可爱", "性感", "优雅", "阳光", "冷酷", "温柔",
-        "hair", "eye", "skin", "wear", "dress", "height", "build",
-        "appearance", "face", "look",
-    ]
-    sentences = re.split(r'[。！？\n.!?]', persona)
-    appearance_parts = []
-    for s in sentences:
-        s = s.strip()
-        if not s:
-            continue
-        for kw in appearance_keywords:
-            if kw in s.lower():
-                appearance_parts.append(s)
-                break
-    return "；".join(appearance_parts) if appearance_parts else persona[:200]
+    # 外貌特征映射：中文关键词 -> 英文描述
+    appearance_map = {
+        "长发": "long hair",
+        "短发": "short hair",
+        "卷发": "curly hair",
+        "直发": "straight hair",
+        "双马尾": "twin tails",
+        "马尾": "ponytail",
+        "刘海": "bangs",
+        "黑发": "black hair",
+        "金发": "blonde hair",
+        "棕发": "brown hair",
+        "红发": "red hair",
+        "白发": "silver hair",
+        "蓝发": "blue hair",
+        "粉发": "pink hair",
+        "紫发": "purple hair",
+        "大眼睛": "big eyes",
+        "蓝眼睛": "blue eyes",
+        "绿眼睛": "green eyes",
+        "棕眼睛": "brown eyes",
+        "黑眼睛": "dark eyes",
+        "皮肤白": "fair skin",
+        "白皙": "fair skin",
+        "小麦色": "tan skin",
+        "高": "tall",
+        "矮": "short",
+        "苗条": "slim",
+        "瘦": "slim",
+        "丰满": "curvy",
+        "运动型": "athletic build",
+        "肌肉": "muscular",
+        "裙子": "wearing a dress",
+        "连衣裙": "wearing a dress",
+        "校服": "wearing school uniform",
+        "制服": "wearing uniform",
+        "西装": "wearing a suit",
+        "衬衫": "wearing a shirt",
+        "T恤": "wearing a t-shirt",
+        "毛衣": "wearing a sweater",
+        "外套": "wearing a jacket",
+        "牛仔裤": "wearing jeans",
+        "眼镜": "wearing glasses",
+        "耳环": "wearing earrings",
+        "项链": "wearing a necklace",
+        "帽子": "wearing a hat",
+        "围巾": "wearing a scarf",
+        "年轻": "young",
+        "少女": "young girl",
+        "少年": "young boy",
+        "女性": "young woman",
+        "男性": "young man",
+        "女孩": "young girl",
+        "男孩": "young boy",
+        "女人": "woman",
+        "男人": "man",
+        "美丽": "beautiful",
+        "漂亮": "beautiful",
+        "可爱": "cute",
+        "帅气": "handsome",
+        "优雅": "elegant",
+        "阳光": "cheerful looking",
+        "温柔": "gentle expression",
+        "冷酷": "cool expression",
+        "微笑": "smiling",
+        "笑容": "smiling",
+    }
 
+    found = []
+    persona_lower = persona.lower()
+    for cn_keyword, en_desc in appearance_map.items():
+        if cn_keyword in persona:
+            if en_desc not in found:
+                found.append(en_desc)
 
-def _extract_scene_from_history(history: List[Message], character_id: int) -> str:
-    """
-    从最近对话历史中提取场景/动作/情绪信息。
-    """
-    recent = history[-6:] if len(history) > 6 else history
-    scene_parts = []
-    for msg in recent:
-        if msg.role == "assistant" and msg.character_id == character_id:
-            content = msg.content.strip()
-            if content:
-                # 取角色最近发言的前100字作为场景参考
-                scene_parts.append(content[:100])
-        elif msg.role == "user":
-            content = msg.content.strip()
-            if content and not detect_image_request(content):
-                scene_parts.append(f"用户说：{content[:80]}")
-    return "；".join(scene_parts[-3:]) if scene_parts else ""
+    # 如果没找到明确外貌关键词，用通用描述
+    if not found:
+        # 从 persona 中提取年龄/性别信息
+        if any(w in persona for w in ["女", "她", "女孩", "女生", "少女"]):
+            found.append("young woman")
+        elif any(w in persona for w in ["男", "他", "男孩", "男生", "少年"]):
+            found.append("young man")
+        else:
+            found.append("young person")
+        found.append("natural appearance")
+
+    return ", ".join(found[:15])  # 最多15个特征
 
 
 def build_image_prompt(
@@ -101,21 +149,24 @@ def build_image_prompt(
     user_message: str,
 ) -> str:
     """
-    构建图片生成 Prompt。
+    构建安全的图片生成 Prompt。
 
-    综合参考：
-    - 角色外貌设定（从 persona 提取）
-    - 当前对话场景（最近历史）
-    - 用户的具体请求（自拍、全身照等）
-    - 当前时间（白天/夜晚）
+    只包含：
+    - 照片类型（自拍/全身/半身等）
+    - 角色名
+    - 纯外貌关键词（从 persona 提取，过滤敏感内容）
+    - 时间光线
+    - 质量描述
 
-    输出英文 Prompt（图片模型对英文理解更好），附中文描述辅助。
+    不包含：
+    - 角色人格/性格描述
+    - 对话历史内容
+    - 任何可能触发审核的敏感内容
     """
-    appearance = _extract_appearance_from_persona(character.persona)
-    scene = _extract_scene_from_history(history, character.id)
+    appearance = _extract_appearance_keywords(character.persona)
 
     # 判断用户请求的图片类型
-    photo_type = "a natural candid photo"
+    photo_type = "a natural candid portrait photo"
     if any(w in user_message for w in ["自拍", "自拍照"]):
         photo_type = "a selfie photo taken from arm's length"
     elif any(w in user_message for w in ["全身", "全身照"]):
@@ -132,32 +183,49 @@ def build_image_prompt(
     # 当前时间
     hour = datetime.now().hour
     if 6 <= hour < 12:
-        time_desc = "morning, soft natural light"
+        time_desc = "morning soft natural light"
     elif 12 <= hour < 18:
-        time_desc = "afternoon, bright daylight"
+        time_desc = "afternoon bright daylight"
     elif 18 <= hour < 22:
-        time_desc = "evening, warm ambient lighting"
+        time_desc = "evening warm ambient lighting"
     else:
-        time_desc = "night, dim atmospheric lighting"
+        time_desc = "night dim atmospheric lighting"
 
-    # 构建英文 Prompt
+    # 构建简洁安全的英文 Prompt
     prompt_parts = [
         f"{photo_type} of {character.name},",
-        f"Character appearance: {appearance}",
+        f"appearance: {appearance},",
+        f"lighting: {time_desc},",
+        "high quality, detailed, realistic, photorealistic, sharp focus, professional photography",
     ]
-    if scene:
-        prompt_parts.append(f"Scene context: {scene}")
-    prompt_parts.append(f"Time: {time_desc}")
-    prompt_parts.append("High quality, detailed, realistic, photorealistic, 8k resolution")
-    prompt_parts.append(f"The person in the photo is {character.name}, maintaining consistent appearance")
 
-    full_prompt = "\n".join(prompt_parts)
+    full_prompt = " ".join(prompt_parts)
 
-    # 限制长度，避免超出模型限制
-    if len(full_prompt) > 2000:
-        full_prompt = full_prompt[:2000]
+    # 限制长度
+    if len(full_prompt) > 1000:
+        full_prompt = full_prompt[:1000]
 
     return full_prompt
+
+
+def build_fallback_image_prompt(character: Character) -> str:
+    """
+    最简降级 Prompt：当正常 prompt 触发审核时使用。
+    只包含最基本的信息，确保能生成图片。
+    """
+    # 判断性别
+    if any(w in character.persona for w in ["女", "她", "女孩", "女生", "少女"]):
+        gender = "young woman"
+    elif any(w in character.persona for w in ["男", "他", "男孩", "男生", "少年"]):
+        gender = "young man"
+    else:
+        gender = "person"
+
+    return (
+        f"a natural portrait photo of a {gender} named {character.name}, "
+        f"high quality, realistic, photorealistic, professional photography, "
+        f"soft natural lighting, sharp focus"
+    )
 
 
 # ===== 图片生成 API 调用 =====
@@ -194,12 +262,14 @@ async def _download_image(url: str, output_dir: Path) -> str:
     return filename
 
 
-async def generate_image(prompt: str) -> str:
+async def generate_image(prompt: str, fallback_prompt: str = None) -> str:
     """
     调用火山方舟图片生成 API，生成图片并保存到本地。
 
     返回图片的相对访问路径，如 "/static/images/xxx.png"。
     前端通过后端静态文件服务访问。
+
+    支持降级重试：当 400 错误（如内容审核误判）时，自动用 fallback_prompt 重试一次。
 
     异常：ImageGenerationError
     """
@@ -213,19 +283,23 @@ async def generate_image(prompt: str) -> str:
         "Authorization": f"Bearer {settings.DOUBAO_VISION_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": settings.DOUBAO_VISION_MODEL,
-        "prompt": prompt,
-        "size": "1024x1024",
-        "n": 1,
-        "response_format": "url",
-    }
 
-    try:
+    async def _call_api(current_prompt: str):
+        payload = {
+            "model": settings.DOUBAO_VISION_MODEL,
+            "prompt": current_prompt,
+            "size": "1024x1024",
+            "n": 1,
+            "response_format": "url",
+        }
         async with httpx.AsyncClient(timeout=settings.IMAGE_TIMEOUT) as client:
             resp = await client.post(api_url, headers=headers, json=payload)
             resp.raise_for_status()
-            data = resp.json()
+            return resp.json()
+
+    data = None
+    try:
+        data = await _call_api(prompt)
     except httpx.TimeoutException:
         raise ImageGenerationError("图片生成超时，请稍后重试。", 504)
     except httpx.HTTPStatusError as e:
@@ -236,13 +310,22 @@ async def generate_image(prompt: str) -> str:
             detail = err_body.get("error", {}).get("message", str(err_body))
         except Exception:
             detail = e.response.text[:200]
-        if status == 401:
-            raise ImageGenerationError("图片生成 API Key 无效，请检查 DOUBAO_VISION_API_KEY 配置。", 401)
-        if status == 403:
-            raise ImageGenerationError("图片生成 API 访问被拒绝（403），请检查接入点权限。", 403)
-        if status == 429:
-            raise ImageGenerationError("图片生成请求频率过高，请稍后再试。", 429)
-        raise ImageGenerationError(f"图片生成失败（{status}）：{detail[:200]}", status)
+
+        # 400 错误时，如果有 fallback_prompt，自动降级重试一次
+        if status == 400 and fallback_prompt and fallback_prompt != prompt:
+            try:
+                data = await _call_api(fallback_prompt)
+            except Exception:
+                # 降级也失败，抛出原始错误
+                raise ImageGenerationError(f"图片生成失败（{status}）：{detail[:200]}", status)
+        else:
+            if status == 401:
+                raise ImageGenerationError("图片生成 API Key 无效，请检查 DOUBAO_VISION_API_KEY 配置。", 401)
+            if status == 403:
+                raise ImageGenerationError("图片生成 API 访问被拒绝（403），请检查接入点权限。", 403)
+            if status == 429:
+                raise ImageGenerationError("图片生成请求频率过高，请稍后再试。", 429)
+            raise ImageGenerationError(f"图片生成失败（{status}）：{detail[:200]}", status)
     except Exception as e:
         raise ImageGenerationError(f"图片生成网络错误：{str(e)[:200]}", 502)
 

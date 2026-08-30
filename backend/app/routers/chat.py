@@ -20,7 +20,7 @@ from ..services.context_service import build_context
 from ..services.llm_client import chat_stream, LLMError
 from ..services.stop_flags import set_stop, is_stopped, clear_stop
 from ..services.auth import get_current_user, check_rate_limit
-from ..services.image_service import detect_image_request, build_image_prompt, generate_image, ImageGenerationError
+from ..services.image_service import detect_image_request, build_image_prompt, build_fallback_image_prompt, generate_image, ImageGenerationError
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -124,7 +124,8 @@ def _stream_character_response(db, conversation_id, character, all_characters, u
                         db3.close()
 
                     image_prompt = build_image_prompt(character, latest_history, latest_user_msg)
-                    image_url = await generate_image(image_prompt)
+                    fallback_prompt = build_fallback_image_prompt(character)
+                    image_url = await generate_image(image_prompt, fallback_prompt=fallback_prompt)
 
                     db4 = SessionLocal()
                     try:
