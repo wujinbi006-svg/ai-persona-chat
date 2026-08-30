@@ -5,10 +5,14 @@ import { useAuth } from './contexts/AuthContext'
 import Sidebar from './components/Sidebar'
 import CharacterSetup from './components/CharacterSetup'
 import ChatArea from './components/ChatArea'
+import ChatPanelV2 from './components/ChatPanelV2'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 
 type View = 'setup' | 'chat'
+
+// Chat Core 2.0: 默认使用 V2 聊天面板，V1 保留作为回滚保险
+const DEFAULT_USE_V2 = true
 
 export default function App() {
   const { user, loading, isSupabaseMode, logout } = useAuth()
@@ -28,6 +32,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [hash, setHash] = useState(window.location.hash)
   const abortRef = useRef(false)
+  // Chat Core 2.0: V2 聊天面板开关（默认开启，V1 保留作为回滚保险）
+  const [useV2, setUseV2] = useState<boolean>(DEFAULT_USE_V2)
 
   // 戏剧模式状态
   const [isDramaActive, setIsDramaActive] = useState(false)
@@ -498,38 +504,49 @@ export default function App() {
             onEnterChat={handleEnterChat}
           />
         ) : activeConversation ? (
-          <ChatArea
-            conversation={activeConversation}
-            characters={characters}
-            messages={messages}
-            streamingContent={streamingContent}
-            streamingCharacter={streamingCharacter}
-            isGenerating={isGenerating}
-            error={error}
-            speaker={speaker}
-            mode={mode}
-            isDramaActive={isDramaActive}
-            dramaRound={dramaRound}
-            onSpeakerChange={setSpeaker}
-            onModeChange={setMode}
-            onSendUser={handleSendUser}
-            onGenerateCharacter={handleGenerateCharacter}
-            onReplyAll={handleReplyAll}
-            onStartDiscussion={handleStartDiscussion}
-            onStartDrama={handleStartDrama}
-            onDramaPause={handleDramaPause}
-            onDramaResume={handleDramaResume}
-            onDramaStop={handleDramaStop}
-            onDramaInterject={handleDramaInterject}
-            onStop={handleStop}
-            onAddCharacter={handleAddCharacter}
-            onEditCharacter={handleEditCharacter}
-            onDeleteCharacter={handleDeleteCharacter}
-            onMoveCharacter={handleMoveCharacter}
-            onUpdateScene={handleUpdateScene}
-            onClearMessages={handleClearMessages}
-            imageGeneratingCharacter={imageGeneratingCharacter}
-          />
+          useV2 ? (
+            // Chat Core 2.0: V2 统一聊天面板（默认生产链路）
+            <ChatPanelV2
+              conversationId={activeConversation.id}
+              characters={characters}
+              initialMessages={messages}
+              onBack={() => setView('setup')}
+            />
+          ) : (
+            // V1 旧聊天面板（保留作为回滚保险）
+            <ChatArea
+              conversation={activeConversation}
+              characters={characters}
+              messages={messages}
+              streamingContent={streamingContent}
+              streamingCharacter={streamingCharacter}
+              isGenerating={isGenerating}
+              error={error}
+              speaker={speaker}
+              mode={mode}
+              isDramaActive={isDramaActive}
+              dramaRound={dramaRound}
+              onSpeakerChange={setSpeaker}
+              onModeChange={setMode}
+              onSendUser={handleSendUser}
+              onGenerateCharacter={handleGenerateCharacter}
+              onReplyAll={handleReplyAll}
+              onStartDiscussion={handleStartDiscussion}
+              onStartDrama={handleStartDrama}
+              onDramaPause={handleDramaPause}
+              onDramaResume={handleDramaResume}
+              onDramaStop={handleDramaStop}
+              onDramaInterject={handleDramaInterject}
+              onStop={handleStop}
+              onAddCharacter={handleAddCharacter}
+              onEditCharacter={handleEditCharacter}
+              onDeleteCharacter={handleDeleteCharacter}
+              onMoveCharacter={handleMoveCharacter}
+              onUpdateScene={handleUpdateScene}
+              onClearMessages={handleClearMessages}
+              imageGeneratingCharacter={imageGeneratingCharacter}
+            />
+          )
         ) : (
           <CharacterSetup
             conversationId={activeId || 0}
