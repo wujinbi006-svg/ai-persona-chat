@@ -186,4 +186,62 @@ export const api = {
   // 停止
   stopGeneration: () =>
     request<{ ok: boolean }>('/chat/stop', { method: 'POST' }),
+
+  // ============================================================
+  // Chat Core 2.0 v2 统一接口（Phase 2）
+  // ============================================================
+
+  // v2 统一生成接口（所有模式走这一个入口）
+  async *chatV2Generate(params: {
+    conversation_id: number
+    message?: string
+    mode?: 'normal' | 'group' | 'drama'
+    strategy?: 'specific' | 'mention' | 'smart'
+    character_id?: number
+    mentioned_character_ids?: number[]
+    drama_config?: Record<string, any>
+    generation_id?: string
+  }) {
+    const headers = await getAuthHeaders()
+    const res = await fetch(`${API_BASE}/chat/v2/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params),
+    })
+    if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+    yield* parseSSE(res)
+  },
+
+  // v2 停止生成
+  chatV2Stop: (conversationId: number, generationId?: string) =>
+    request<{ status: string; generation_id?: string; message: string }>('/chat/v2/stop', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId, generation_id: generationId }),
+    }),
+
+  // v2 暂停生成
+  chatV2Pause: (conversationId: number) =>
+    request<{ status: string; generation_id?: string; message: string }>('/chat/v2/pause', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }),
+
+  // v2 继续生成
+  chatV2Resume: (conversationId: number) =>
+    request<{ status: string; generation_id?: string; message: string }>('/chat/v2/resume', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }),
+
+  // v2 查询生成状态
+  chatV2Status: (conversationId: number) =>
+    request<{
+      conversation_id: number
+      generation_id?: string
+      status: string
+      current_character_id?: number
+      current_speaker_index: number
+      mode?: string
+      speakers: number[]
+    }>(`/chat/v2/status/${conversationId}`),
 }

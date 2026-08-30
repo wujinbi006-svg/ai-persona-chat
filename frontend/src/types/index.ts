@@ -49,6 +49,10 @@ export interface ChatStreamChunk {
     | 'image_start' | 'image_done' | 'image_error'
     | 'drama_start' | 'drama_paused' | 'drama_done'
     | 'round_start' | 'round_done'
+    // Chat Core 2.0 v2 新事件类型
+    | 'generation_started' | 'generation_completed' | 'generation_stopped'
+    | 'generation_error' | 'generation_conflict'
+    | 'character_started' | 'character_completed'
   text?: string
   character_id?: number
   character_name?: string
@@ -58,6 +62,15 @@ export interface ChatStreamChunk {
   interval?: number
   image_url?: string
   message_id?: number
+  // v2 新字段
+  generation_id?: string
+  speakers?: number[]
+  speaker_index?: number
+  sequence?: number
+  mode?: string
+  strategy?: string
+  total_speakers?: number
+  reason?: string
 }
 
 export type Speaker = 'user' | number
