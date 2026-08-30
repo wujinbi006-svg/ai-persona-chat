@@ -199,6 +199,11 @@ def add_message(
     content: str,
     character_id: Optional[int] = None,
     image_url: Optional[str] = None,
+    # Phase 3: 数据一致性字段
+    generation_id: Optional[str] = None,
+    sequence_number: Optional[int] = None,
+    parent_message_id: Optional[int] = None,
+    message_type: Optional[str] = None,
 ) -> Message:
     msg = Message(
         conversation_id=conversation_id,
@@ -207,6 +212,10 @@ def add_message(
         content=content,
         character_id=character_id,
         image_url=image_url,
+        generation_id=generation_id,
+        sequence_number=sequence_number,
+        parent_message_id=parent_message_id,
+        message_type=message_type or ("image" if image_url else "text"),
     )
     db.add(msg)
     db.commit()

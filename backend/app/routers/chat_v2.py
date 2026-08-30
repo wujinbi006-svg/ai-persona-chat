@@ -20,6 +20,7 @@ from ..services.orchestrator import (
 from ..services.generation_executor import execute_character_generation
 from ..services import conversation_service as svc
 from ..services import router_service as router_svc
+from ..services import generation_session_service as gs_svc
 from ..services.auth import get_current_user, check_rate_limit
 from ..database import SessionLocal
 
@@ -137,9 +138,13 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
         if not characters:
             raise HTTPException(status_code=400, detail="请先添加 AI 角色")
 
-        # 如果有用户消息，先保存
-        if body.message.strip():
-            svc.add_message(db, body.conversation_id, user_id, "user", body.message.strip())
+        # Phase 3: 数据库级生成唯一性检查
+        active_session = gs_svc.get_active_session(db, body.conversation_id)
+        if active_session:
+            raise HTTPException(
+                status_code=409,
+                detail=f"当前会话正在生成中（generation_id={active_session.generation_id}），请稍候。",
+            )
 
         # 解析 @角色（如果策略是 mention 但没有显式提供 IDs）
         mentioned_ids = body.mentioned_character_ids
@@ -173,6 +178,36 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
     if body.generation_id:
         plan.generation_id = body.generation_id
 
+    # Phase 3: 创建持久化 GenerationSession
+    db_session = SessionLocal()
+    try:
+        # 先保存用户消息（如果有），并标记 generation_id 和 sequence_number=1
+        parent_message_id = None
+        if body.message.strip():
+            user_msg = svc.add_message(
+                db_session, body.conversation_id, user_id, "user", body.message.strip(),
+                generation_id=plan.generation_id,
+                sequence_number=1,
+                message_type="text",
+            )
+            parent_message_id = user_msg.id
+
+        # 创建生成会话记录
+        gs_svc.create_session(
+            db_session,
+            generation_id=plan.generation_id,
+            conversation_id=body.conversation_id,
+            user_id=user_id,
+            mode=mode.value,
+            strategy=strategy.value,
+            speakers=plan.speakers,
+            user_message=body.message,
+            drama_config=body.drama_config,
+        )
+        gs_svc.update_session_status(db_session, plan.generation_id, "running")
+    finally:
+        db_session.close()
+
     # 定义角色生成器（闭包捕获 conversation 和 all_characters）
     async def character_generator(session, character):
         async for event in execute_character_generation(
@@ -184,13 +219,45 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
 
     # 执行并返回 SSE 流
     async def event_stream():
+        final_status = "completed"
+        final_error = None
         try:
             async for event in orch.execute(plan, character_generator, char_lookup):
+                # Phase 3: 同步关键状态到数据库
+                if event.get("type") == "character_started":
+                    db_upd = SessionLocal()
+                    try:
+                        gs_svc.update_session_progress(
+                            db_upd, plan.generation_id,
+                            current_speaker_index=event.get("speaker_index"),
+                            current_speaker_id=event.get("character_id"),
+                        )
+                    finally:
+                        db_upd.close()
+                elif event.get("type") == "generation_stopped":
+                    final_status = "stopped"
+                elif event.get("type") == "generation_error":
+                    final_status = "error"
+                    final_error = event.get("message")
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except GenerationConflictError as e:
+            final_status = "error"
+            final_error = str(e)
             yield f"data: {json.dumps({'type': 'generation_conflict', 'message': str(e)}, ensure_ascii=False)}\n\n"
         except Exception as e:
+            final_status = "error"
+            final_error = str(e)[:200]
             yield f"data: {json.dumps({'type': 'generation_error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
+        finally:
+            # Phase 3: 更新最终状态到数据库
+            db_final = SessionLocal()
+            try:
+                gs_svc.update_session_status(
+                    db_final, plan.generation_id, final_status,
+                    error_message=final_error,
+                )
+            finally:
+                db_final.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

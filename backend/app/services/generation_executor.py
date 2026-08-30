@@ -98,13 +98,17 @@ async def execute_character_generation(
                 finally:
                     db_mark.close()
 
-            # 保存文本回复
+            # 保存文本回复（Phase 3: 写入 generation_id 和 sequence_number）
             if full_content.strip():
                 db2 = SessionLocal()
                 try:
+                    seq = session.next_sequence()
                     svc.add_message(
                         db2, conversation_id, user_id, "assistant",
                         full_content, character_id=character.id,
+                        generation_id=session.generation_id,
+                        sequence_number=seq,
+                        message_type="text",
                     )
                 finally:
                     db2.close()
@@ -130,9 +134,13 @@ async def execute_character_generation(
 
                     db4 = SessionLocal()
                     try:
+                        seq = session.next_sequence()
                         img_msg = svc.add_message(
                             db4, conversation_id, user_id, "assistant",
                             content="", character_id=character.id, image_url=image_url,
+                            generation_id=session.generation_id,
+                            sequence_number=seq,
+                            message_type="image",
                         )
                         msg_id = img_msg.id
                     finally:

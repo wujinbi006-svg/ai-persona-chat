@@ -8,11 +8,14 @@
 6. characters 表增加 sort_order 列
 7. conversations 表增加 scene/scene_time/scene_context 列
 8. 创建 memories 表
+9. Phase 3: messages 增加 generation_id/sequence_number/parent_message_id/message_type
+10. Phase 3: 创建 generation_sessions 表
+11. Phase 4: 创建 facts 表（Canonical Facts）
 """
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 from .database import engine, Base
-from .models.conversation import Conversation, Character, Message
+from .models.conversation import Conversation, Character, Message, GenerationSession, Fact
 
 DEFAULT_USER_ID = "local-user"
 
@@ -36,6 +39,28 @@ def run_migrations():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE messages ADD COLUMN image_url VARCHAR(500)"))
             print("[Migration] messages.image_url added")
+
+    # Phase 3: messages 数据一致性字段
+    if "messages" in inspector.get_table_names():
+        cols = [c["name"] for c in inspector.get_columns("messages")]
+        phase3_fields = {
+            "generation_id": "VARCHAR(64)",
+            "sequence_number": "INTEGER",
+            "parent_message_id": "INTEGER",
+            "message_type": "VARCHAR(20) DEFAULT 'text'",
+        }
+        for field, field_type in phase3_fields.items():
+            if field not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE messages ADD COLUMN {field} {field_type}"))
+                print(f"[Migration] messages.{field} added (Phase 3)")
+
+        # 为 generation_id 创建索引（如果不存在）
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_generation_id ON messages (generation_id)"))
+        except Exception:
+            pass
 
     # characters.sort_order
     if "characters" in inspector.get_table_names():
