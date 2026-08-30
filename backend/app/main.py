@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from .database import engine, Base
 from .migrations import run_migrations
-from .routers import conversations, chat, characters
+from .routers import conversations, chat, characters, chat_v2
 from .config import settings
 
 Base.metadata.create_all(bind=engine)
@@ -36,6 +36,7 @@ app.mount("/static/images", StaticFiles(directory=str(_image_dir)), name="genera
 app.include_router(conversations.router)
 app.include_router(characters.router)
 app.include_router(chat.router)
+app.include_router(chat_v2.router)
 
 
 @app.get("/health")
