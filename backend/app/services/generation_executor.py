@@ -4,6 +4,7 @@ Chat Core 2.0 - Generation Executor（生成执行器）
 把现有的角色回复生成逻辑包装成 Orchestrator 需要的 character_generator 格式。
 这是旧代码和新内核之间的适配器层。
 """
+import asyncio
 import json
 from typing import AsyncGenerator, Dict, Any
 from sqlalchemy.orm import Session
@@ -18,6 +19,10 @@ from ..services.image_service import (
     build_fallback_image_prompt, generate_image, ImageGenerationError,
 )
 from .orchestrator import GenerationSession
+
+
+# 后台记忆提取任务跟踪（防止任务被 GC）
+_background_memory_tasks = set()
 
 
 def _get_latest_user_message(history):
@@ -169,9 +174,28 @@ async def execute_character_generation(
                         "message": f"图片生成失败：{str(e)[:200]}",
                     }
 
-            # ===== 异步记忆提取（后台任务，不阻塞 SSE）=====
-            # 注意：这里不直接调用，而是在 Orchestrator 完成后由后台 worker 处理
-            # Phase 4 会实现真正的异步记忆提取
+            # ===== Phase 4: 异步记忆提取（后台任务，不阻塞 SSE）=====
+            # 记忆提取在后台异步执行，不等待完成，不阻塞 SSE 流结束
+            async def _extract_memories_background():
+                try:
+                    db_bg = SessionLocal()
+                    try:
+                        if mem_svc.should_extract(db_bg, conversation_id, user_id):
+                            all_msgs = svc.get_messages(db_bg, conversation_id, user_id=user_id)
+                            all_chars = svc.list_characters(db_bg, conversation_id, user_id=user_id)
+                            await mem_svc.extract_memories_from_batch(
+                                db_bg, user_id, conversation_id, all_msgs, all_chars
+                            )
+                    finally:
+                        db_bg.close()
+                except Exception:
+                    # 后台记忆提取失败不影响主流程
+                    pass
+
+            # 启动后台任务，不等待
+            bg_task = asyncio.create_task(_extract_memories_background())
+            _background_memory_tasks.add(bg_task)
+            bg_task.add_done_callback(_background_memory_tasks.discard)
 
         except LLMError as e:
             yield {
