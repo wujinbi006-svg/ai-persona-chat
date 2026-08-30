@@ -176,6 +176,11 @@ async def execute_character_generation(
 
             # ===== Phase 4: 异步记忆提取（后台任务，不阻塞 SSE）=====
             # 记忆提取在后台异步执行，不等待完成，不阻塞 SSE 流结束
+            # Phase 9 生产审计：
+            # - 独立数据库会话，不影响主流程事务
+            # - 全异常捕获，失败不影响聊天成功
+            # - 日志记录，异常可见（不再静默 pass）
+            # - Render 重启时任务消失是可接受的（主聊天已完成，记忆提取是 best-effort）
             async def _extract_memories_background():
                 try:
                     db_bg = SessionLocal()
@@ -188,9 +193,12 @@ async def execute_character_generation(
                             )
                     finally:
                         db_bg.close()
-                except Exception:
-                    # 后台记忆提取失败不影响主流程
-                    pass
+                except Exception as e:
+                    # Phase 9: 后台记忆提取失败不影响主流程，但记录日志便于追踪
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"[Memory] 后台记忆提取失败 (conversation={conversation_id}): {str(e)[:200]}"
+                    )
 
             # 启动后台任务，不等待
             bg_task = asyncio.create_task(_extract_memories_background())
