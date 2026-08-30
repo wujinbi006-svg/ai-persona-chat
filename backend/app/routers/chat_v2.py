@@ -331,3 +331,275 @@ async def get_generation_status(conversation_id: int, current_user: dict = Depen
         conversation_id=conversation_id,
         status="idle",
     )
+
+
+# ============================================================
+# Phase 5: 剧情模式（持续运行状态机）
+# ============================================================
+
+class DramaStartRequest(BaseModel):
+    """剧情模式开始请求（不再用固定轮数，持续运行直到暂停/停止）。"""
+    conversation_id: int
+    character_ids: List[int]
+    scene: Optional[str] = None
+    scene_time: Optional[str] = None
+    scene_context: Optional[str] = None
+    interval: int = 3  # 角色间等待秒数
+    max_duration_seconds: int = 1800  # 最大运行时间 30 分钟（服务器级保护）
+    max_generations: int = 100  # 最大连续生成次数（服务器级保护）
+    initial_message: Optional[str] = None  # 剧情开场消息
+
+
+class DramaInterjectRequest(BaseModel):
+    """剧情模式用户插话请求。"""
+    conversation_id: int
+    generation_id: str
+    message: str
+
+
+@router.post("/drama/start")
+async def drama_start(body: DramaStartRequest, current_user: dict = Depends(get_current_user)):
+    """
+    开始剧情模式（持续运行）。
+
+    剧情模式不再使用固定轮数，而是持续运行直到：
+    - 用户暂停
+    - 用户停止
+    - 达到最大运行时间
+    - 达到最大生成次数
+
+    返回 SSE 事件流。
+    """
+    import asyncio as _asyncio
+    user_id = current_user["id"]
+
+    if not check_rate_limit(user_id):
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+
+    # 获取会话和角色
+    db = SessionLocal()
+    try:
+        conv = svc.get_conversation(db, body.conversation_id, user_id=user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+        characters = svc.list_characters(db, body.conversation_id, user_id=user_id)
+        if not characters:
+            raise HTTPException(status_code=400, detail="请先添加 AI 角色")
+
+        # 过滤有效角色
+        valid_chars = [c for c in characters if c.id in body.character_ids]
+        if not valid_chars:
+            raise HTTPException(status_code=400, detail="指定的角色不存在")
+
+        # 按 sort_order 排序
+        valid_chars.sort(key=lambda c: (c.sort_order, c.id))
+
+        # 更新场景
+        if body.scene or body.scene_time or body.scene_context:
+            svc.update_conversation(db, body.conversation_id, {
+                "scene": body.scene or "",
+                "scene_time": body.scene_time or "",
+                "scene_context": body.scene_context or "",
+            })
+
+        # 数据库级生成唯一性检查
+        active_session = gs_svc.get_active_session(db, body.conversation_id)
+        if active_session:
+            raise HTTPException(
+                status_code=409,
+                detail=f"当前会话正在生成中（generation_id={active_session.generation_id}），请稍候。",
+            )
+
+        char_lookup = {c.id: c for c in valid_chars}
+
+    finally:
+        db.close()
+
+    # 获取全局 Orchestrator
+    orch = get_orchestrator()
+
+    # 规划剧情模式 ResponsePlan
+    plan = orch.plan(
+        mode=ChatMode.DRAMA,
+        strategy=SpeakerStrategy.SPECIFIC,
+        user_message=body.initial_message or "",
+        conversation_id=body.conversation_id,
+        user_id=user_id,
+        characters=valid_chars,
+        specified_character_id=valid_chars[0].id,
+        drama_config={
+            "character_ids": [c.id for c in valid_chars],
+            "interval": body.interval,
+            "max_duration_seconds": body.max_duration_seconds,
+            "max_generations": body.max_generations,
+        },
+    )
+
+    # 创建持久化 GenerationSession
+    db_session = SessionLocal()
+    try:
+        # 保存开场消息（如果有）
+        if body.initial_message and body.initial_message.strip():
+            svc.add_message(
+                db_session, body.conversation_id, user_id, "user",
+                body.initial_message.strip(),
+                generation_id=plan.generation_id,
+                sequence_number=1,
+            )
+
+        gs_svc.create_session(
+            db_session,
+            generation_id=plan.generation_id,
+            conversation_id=body.conversation_id,
+            user_id=user_id,
+            mode="drama",
+            strategy="specific",
+            speakers=[c.id for c in valid_chars],
+            user_message=body.initial_message or "",
+            drama_config={
+                "interval": body.interval,
+                "max_duration_seconds": body.max_duration_seconds,
+                "max_generations": body.max_generations,
+            },
+        )
+        gs_svc.update_session_status(db_session, plan.generation_id, "running")
+    finally:
+        db_session.close()
+
+    # 剧情模式持续运行生成器
+    async def drama_character_generator(session, character):
+        async for event in execute_character_generation(
+            session, character,
+            all_characters=valid_chars,
+            conversation=conv,
+        ):
+            yield event
+
+    async def drama_event_stream():
+        start_time = _asyncio.get_event_loop().time()
+        generation_count = 0
+        final_status = "completed"
+        final_error = None
+
+        try:
+            # 剧情开始事件
+            yield f"data: {json.dumps({'type': 'drama_started', 'generation_id': plan.generation_id, 'characters': [c.name for c in valid_chars], 'interval': body.interval}, ensure_ascii=False)}\n\n"
+
+            # 持续运行循环
+            while True:
+                # 检查停止
+                if orch.get_session(body.conversation_id) and orch.get_session(body.conversation_id).should_stop:
+                    final_status = "stopped"
+                    break
+
+                # 检查服务器级保护
+                elapsed = _asyncio.get_event_loop().time() - start_time
+                if elapsed > body.max_duration_seconds:
+                    final_status = "stopped"
+                    final_error = "剧情达到最大运行时间，已自动暂停"
+                    yield f"data: {json.dumps({'type': 'drama_limit_reached', 'reason': 'max_duration', 'message': final_error}, ensure_ascii=False)}\n\n"
+                    break
+
+                if generation_count >= body.max_generations:
+                    final_status = "stopped"
+                    final_error = "剧情达到最大生成次数，已自动暂停"
+                    yield f"data: {json.dumps({'type': 'drama_limit_reached', 'reason': 'max_generations', 'message': final_error}, ensure_ascii=False)}\n\n"
+                    break
+
+                # 按顺序执行每个角色
+                for char_idx, character in enumerate(valid_chars):
+                    # 检查停止
+                    current_session = orch.get_session(body.conversation_id)
+                    if current_session and current_session.should_stop:
+                        final_status = "stopped"
+                        break
+
+                    # 等待暂停恢复
+                    if current_session and current_session.status.value == "paused":
+                        yield f"data: {json.dumps({'type': 'drama_paused', 'generation_id': plan.generation_id}, ensure_ascii=False)}\n\n"
+                        # 等待恢复或停止
+                        while current_session and current_session.status.value == "paused":
+                            await _asyncio.sleep(0.5)
+                            current_session = orch.get_session(body.conversation_id)
+                            if current_session and current_session.should_stop:
+                                final_status = "stopped"
+                                break
+                        if final_status == "stopped":
+                            break
+                        yield f"data: {json.dumps({'type': 'drama_resumed', 'generation_id': plan.generation_id}, ensure_ascii=False)}\n\n"
+
+                    generation_count += 1
+
+                    # 执行角色生成（复用 Orchestrator 的执行逻辑）
+                    char_session = GenerationSession(
+                        generation_id=plan.generation_id,
+                        conversation_id=body.conversation_id,
+                        user_id=user_id,
+                        plan=plan,
+                    )
+                    char_session.start()
+                    char_session.current_speaker_index = char_idx
+                    char_session.current_character_id = character.id
+
+                    async for event in drama_character_generator(char_session, character):
+                        event["generation_id"] = plan.generation_id
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                    # 角色间等待
+                    if body.interval > 0 and char_idx < len(valid_chars) - 1:
+                        await _asyncio.sleep(body.interval)
+
+                if final_status == "stopped":
+                    break
+
+                # 一轮结束后短暂等待
+                await _asyncio.sleep(0.5)
+
+        except Exception as e:
+            final_status = "error"
+            final_error = str(e)[:200]
+            yield f"data: {json.dumps({'type': 'generation_error', 'message': final_error}, ensure_ascii=False)}\n\n"
+        finally:
+            # 更新最终状态
+            db_final = SessionLocal()
+            try:
+                gs_svc.update_session_status(
+                    db_final, plan.generation_id, final_status,
+                    error_message=final_error,
+                )
+            finally:
+                db_final.close()
+
+            yield f"data: {json.dumps({'type': 'drama_ended', 'generation_id': plan.generation_id, 'status': final_status, 'generations': generation_count}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(drama_event_stream(), media_type="text/event-stream")
+
+
+@router.post("/drama/interject")
+async def drama_interject(body: DramaInterjectRequest, current_user: dict = Depends(get_current_user)):
+    """
+    剧情模式用户插话。
+
+    暂停当前剧情，保存用户消息，然后继续剧情。
+    """
+    user_id = current_user["id"]
+
+    db = SessionLocal()
+    try:
+        # 保存用户消息
+        svc.add_message(
+            db, body.conversation_id, user_id, "user", body.message.strip(),
+            generation_id=body.generation_id,
+        )
+
+        # 更新 generation session 进度
+        gs_svc.update_session_status(db, body.generation_id, "running")
+    finally:
+        db.close()
+
+    return {
+        "status": "interjected",
+        "generation_id": body.generation_id,
+        "message": "用户消息已插入，剧情继续",
+    }
