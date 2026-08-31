@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +12,12 @@ Base.metadata.create_all(bind=engine)
 run_migrations()
 
 app = FastAPI(title="AI 人格聊天平台", version="3.1.0")
+
+# RC-3: Release Version 标识
+# 从环境变量获取版本号、commit hash、环境信息
+APP_VERSION = os.getenv("APP_VERSION", "Chat Core 2.0 RC-3")
+APP_COMMIT = os.getenv("APP_COMMIT", "staging")
+APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "staging")
 
 # CORS
 if settings.USE_SUPABASE and settings.FRONTEND_URL:
@@ -46,3 +53,15 @@ def health_root():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "mode": "supabase" if settings.USE_SUPABASE else "local"}
+
+# RC-3: Release Version 接口
+# 返回版本号、commit hash、环境信息，用于排查部署版本问题
+@app.get("/api/version")
+def version():
+    return {
+        "version": APP_VERSION,
+        "commit": APP_COMMIT,
+        "environment": APP_ENVIRONMENT,
+        "app_name": "AI 人格聊天平台",
+        "chat_core": "2.0",
+    }
