@@ -90,11 +90,15 @@ async def execute_character_generation(
 
         full_content = ""
         try:
-            # 流式生成文本
+            # 遗留问题3: 真正的 Stop - 在每个 chunk 之间检查 should_stop
+            # 对于大多数 LLM API（chunk 很小，通常几个字），检查频率已经足够高
+            # 点击停止后，当前 chunk 完成后立即停止，不会再生成下一个 chunk
+            # 当客户端断开连接时，FastAPI 会自动取消异步任务（asyncio.CancelledError）
             async for chunk in chat_stream(messages):
-                # 检查是否被停止
+                # 检查是否被停止（每个 chunk 之间检查，响应迅速）
                 if session.should_stop:
-                    break
+                    # 立即停止，不保存不完整的回复
+                    return
 
                 full_content += chunk
                 yield {
