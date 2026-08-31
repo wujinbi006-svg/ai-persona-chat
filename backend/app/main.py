@@ -19,11 +19,9 @@ APP_VERSION = os.getenv("APP_VERSION", "Chat Core 2.0 RC-3")
 APP_COMMIT = os.getenv("APP_COMMIT", "staging")
 APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "staging")
 
-# CORS
-if settings.USE_SUPABASE and settings.FRONTEND_URL:
-    allow_origins = [settings.FRONTEND_URL]
-else:
-    allow_origins = ["*"]
+# CORS - RC-3 测试阶段允许所有来源，确保 Staging 和 Production 都能访问
+# 测试完成后可以改回严格模式
+allow_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
