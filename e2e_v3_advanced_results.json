@@ -1,0 +1,45 @@
+{
+  "results": {
+    "注册登录": {
+      "status": "PASS",
+      "detail": "email=rc3_adv_1788152539@example.com"
+    },
+    "创建角色": {
+      "status": "PASS",
+      "detail": "小雅、小王已创建"
+    },
+    "进入聊天": {
+      "status": "PASS",
+      "detail": "已进入聊天界面"
+    },
+    "普通聊天": {
+      "status": "PASS",
+      "detail": "耗时=20563ms, API请求=1"
+    },
+    "@多人": {
+      "status": "PASS",
+      "detail": "耗时=41097ms, 小雅=3, 小王=1, API请求=1"
+    },
+    "快速连点": {
+      "status": "PASS",
+      "detail": "耗时=25944ms, API请求=1（应<=1）"
+    },
+    "群聊": {
+      "status": "PASS",
+      "detail": "耗时=41126ms, 小雅=6, 小王=4, API请求=1"
+    },
+    "Stop功能": {
+      "status": "PASS",
+      "detail": "停止响应=5022ms"
+    }
+  },
+  "timings": {
+    "普通聊天": 20563,
+    "@多人": 41097,
+    "快速连点": 25944,
+    "群聊": 41126,
+    "Stop响应": 5022
+  },
+  "passed": 8,
+  "failed": 0
+}

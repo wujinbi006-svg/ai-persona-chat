@@ -1,0 +1,52 @@
+{
+  "results": {
+    "页面加载": {
+      "status": "PASS",
+      "detail": "title=AI 人格聊天, 1767ms"
+    },
+    "用户注册": {
+      "status": "PASS",
+      "detail": "email=rc3_v2_1788152403@example.com"
+    },
+    "登录状态": {
+      "status": "PASS",
+      "detail": "已登录，看到应用界面"
+    },
+    "CORS": {
+      "status": "PASS",
+      "detail": "无CORS错误"
+    },
+    "新建聊天": {
+      "status": "PASS",
+      "detail": "UI显示=3060ms, 进入角色设置"
+    },
+    "创建角色": {
+      "status": "FAIL",
+      "detail": "耗时=5659ms, 未找到小雅"
+    },
+    "创建第二个角色": {
+      "status": "PASS",
+      "detail": "小王已创建"
+    },
+    "进入聊天": {
+      "status": "PASS",
+      "detail": "已进入聊天界面"
+    },
+    "普通聊天": {
+      "status": "PASS",
+      "detail": "耗时=25568ms, API请求=1"
+    },
+    "Console 错误": {
+      "status": "FAIL",
+      "detail": "2个相关错误: ['Failed to load resource: the server responded with a status of 401 ()', '加载会话失败 Error: {\"detail\":\"未登录\"}\\n    at me (https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app/assets/index-OmQVPbxA.js:83:58073)\\n    at async https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app/assets/index-OmQVPbxA.js:113:63808']"
+    }
+  },
+  "timings": {
+    "页面加载": 1767,
+    "新建聊天UI": 3060,
+    "创建角色": 5659,
+    "普通聊天": 25568
+  },
+  "passed": 8,
+  "failed": 2
+}

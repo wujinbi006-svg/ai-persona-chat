@@ -1,0 +1,49 @@
+{
+  "results": {
+    "页面加载": {
+      "status": "PASS",
+      "detail": "title=AI 人格聊天, 1896ms"
+    },
+    "用户注册": {
+      "status": "PASS",
+      "detail": "email=rc3_full_1788151986@example.com, 跳转至应用"
+    },
+    "登录状态": {
+      "status": "PASS",
+      "detail": "已登录, url=https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app/#register"
+    },
+    "新建聊天": {
+      "status": "FAIL",
+      "detail": "未找到新对话按钮"
+    },
+    "创建角色": {
+      "status": "FAIL",
+      "detail": "Locator.fill: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"input\").first.first\n"
+    },
+    "普通聊天": {
+      "status": "FAIL",
+      "detail": "未找到输入框"
+    },
+    "快速连点": {
+      "status": "FAIL",
+      "detail": "未找到输入框"
+    },
+    "@单人": {
+      "status": "FAIL",
+      "detail": "未找到输入框"
+    },
+    "@多人": {
+      "status": "FAIL",
+      "detail": "未找到输入框"
+    },
+    "Console 错误": {
+      "status": "FAIL",
+      "detail": "3个相关错误: [\"Access to fetch at 'https://ai-persona-backend-staging.onrender.com/api/conversations' from origin 'https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.\", 'Failed to load resource: net::ERR_FAILED', '加载会话失败 TypeError: Failed to fetch\\n    at me (https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app/assets/index-OmQVPbxA.js:83:57984)\\n    at async https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app/assets/index-OmQVPbxA.js:113:63808']"
+    }
+  },
+  "timings": {
+    "页面加载": 1896
+  },
+  "passed": 3,
+  "failed": 7
+}
