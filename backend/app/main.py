@@ -20,14 +20,15 @@ APP_COMMIT = os.getenv("APP_COMMIT", "staging")
 APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "staging")
 
 # CORS - RC-3 最终验收：收紧为精确域名，不允许 *
-# 从环境变量 FRONTEND_URL 读取，同时允许生产和 Staging 前端
-allow_origins = []
-if settings.FRONTEND_URL:
+# 同时允许生产前端和当前 Staging 前端
+allow_origins = [
+    "https://ai-persona-chat-mu.vercel.app",  # 生产前端
+    "https://ai-persona-chat-qkito1k5p-ai-persona-team.vercel.app",  # 当前 Staging 前端
+    "https://ai-persona-chat-lm2nlumr7-ai-persona-team.vercel.app",  # 旧 Staging 前端（兼容）
+]
+# 如果环境变量配置了 FRONTEND_URL，也加入
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in allow_origins:
     allow_origins.append(settings.FRONTEND_URL)
-# 始终允许生产前端（合并 main 后使用）
-allow_origins.append("https://ai-persona-chat-mu.vercel.app")
-# 去重
-allow_origins = list(set(allow_origins))
 print(f"[CORS] Allowed origins: {allow_origins}")
 
 app.add_middleware(
