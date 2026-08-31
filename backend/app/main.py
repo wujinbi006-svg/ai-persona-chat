@@ -19,9 +19,16 @@ APP_VERSION = os.getenv("APP_VERSION", "Chat Core 2.0 RC-3")
 APP_COMMIT = os.getenv("APP_COMMIT", "staging")
 APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "staging")
 
-# CORS - RC-3 测试阶段允许所有来源，确保 Staging 和 Production 都能访问
-# 测试完成后可以改回严格模式
-allow_origins = ["*"]
+# CORS - RC-3 最终验收：收紧为精确域名，不允许 *
+# 从环境变量 FRONTEND_URL 读取，同时允许生产和 Staging 前端
+allow_origins = []
+if settings.FRONTEND_URL:
+    allow_origins.append(settings.FRONTEND_URL)
+# 始终允许生产前端（合并 main 后使用）
+allow_origins.append("https://ai-persona-chat-mu.vercel.app")
+# 去重
+allow_origins = list(set(allow_origins))
+print(f"[CORS] Allowed origins: {allow_origins}")
 
 app.add_middleware(
     CORSMiddleware,
