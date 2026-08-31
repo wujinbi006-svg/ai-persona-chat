@@ -1,0 +1,55 @@
+{
+  "results": {
+    "注册登录": {
+      "status": "PASS",
+      "detail": "email=rc3_final_1788153607@example.com"
+    },
+    "创建角色": {
+      "status": "PASS",
+      "detail": "小雅、小王已创建"
+    },
+    "进入聊天": {
+      "status": "PASS",
+      "detail": "已进入聊天界面"
+    },
+    "普通聊天": {
+      "status": "PASS",
+      "detail": "耗时=20557ms"
+    },
+    "Stop真实延迟": {
+      "status": "PASS",
+      "detail": "停止延迟=5404ms, 内容已停止增长"
+    },
+    "@多人": {
+      "status": "PASS",
+      "detail": "小雅=5, 小王=2"
+    },
+    "群聊": {
+      "status": "PASS",
+      "detail": "小雅=8, 小王=4"
+    },
+    "长期记忆": {
+      "status": "PARTIAL",
+      "detail": "未明确找到考试记忆（可能需要更多时间或优化检索）"
+    },
+    "图片生成": {
+      "status": "PASS",
+      "detail": "图片元素数量=1"
+    },
+    "剧情模式": {
+      "status": "PASS",
+      "detail": "剧情启动并停止成功"
+    },
+    "CORS": {
+      "status": "PASS",
+      "detail": "所有 API 请求正常，无 CORS 错误"
+    }
+  },
+  "timings": {
+    "普通聊天": 20557,
+    "Stop真实延迟": 5404
+  },
+  "passed": 10,
+  "partial": 1,
+  "failed": 0
+}
