@@ -193,12 +193,16 @@ async def execute_character_generation(
 
             # ===== Phase 4: 异步记忆提取（后台任务，不阻塞 SSE）=====
             # 记忆提取在后台异步执行，不等待完成，不阻塞 SSE 流结束
-            # Phase 9 生产审计：
+            # Phase 9 + 遗留问题4: 生产审计 + 可观测性
             # - 独立数据库会话，不影响主流程事务
             # - 全异常捕获，失败不影响聊天成功
-            # - 日志记录，异常可见（不再静默 pass）
+            # - 详细日志：started / completed / failed，带 conversation_id
             # - Render 重启时任务消失是可接受的（主聊天已完成，记忆提取是 best-effort）
+            import logging
+            _logger = logging.getLogger(__name__)
+
             async def _extract_memories_background():
+                _logger.info(f"[Memory] 后台记忆提取开始 (conversation={conversation_id}, character={character.name})")
                 try:
                     db_bg = SessionLocal()
                     try:
@@ -208,13 +212,16 @@ async def execute_character_generation(
                             await mem_svc.extract_memories_from_batch(
                                 db_bg, user_id, conversation_id, all_msgs, all_chars
                             )
+                            _logger.info(f"[Memory] 后台记忆提取完成 (conversation={conversation_id}, messages={len(all_msgs)})")
+                        else:
+                            _logger.info(f"[Memory] 后台记忆提取跳过（未达到提取阈值） (conversation={conversation_id})")
                     finally:
                         db_bg.close()
                 except Exception as e:
-                    # Phase 9: 后台记忆提取失败不影响主流程，但记录日志便于追踪
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"[Memory] 后台记忆提取失败 (conversation={conversation_id}): {str(e)[:200]}"
+                    # 遗留问题4: 后台记忆提取失败不影响主流程，但记录详细日志便于追踪
+                    _logger.warning(
+                        f"[Memory] 后台记忆提取失败 (conversation={conversation_id}): {str(e)[:200]}",
+                        exc_info=True,
                     )
 
             # 启动后台任务，不等待
