@@ -1,0 +1,54 @@
+{
+  "results": {
+    "页面加载": {
+      "status": "PASS",
+      "detail": "耗时=3810ms"
+    },
+    "注册登录": {
+      "status": "PASS",
+      "detail": "email=prod_smoke_1788154967@example.com"
+    },
+    "新建聊天": {
+      "status": "PASS",
+      "detail": "耗时=3071ms"
+    },
+    "创建角色": {
+      "status": "PASS",
+      "detail": "耗时=4647ms"
+    },
+    "进入聊天": {
+      "status": "PASS",
+      "detail": "已进入聊天界面"
+    },
+    "普通聊天": {
+      "status": "PASS",
+      "detail": "耗时=20564ms，AI已回复"
+    },
+    "快速连点": {
+      "status": "PASS",
+      "detail": "快速点击5次，无重复生成（发送按钮被禁用）"
+    },
+    "@多人": {
+      "status": "PASS",
+      "detail": "小雅=2, 小王=2"
+    },
+    "Stop功能": {
+      "status": "PASS",
+      "detail": "停止延迟=5039ms"
+    },
+    "图片生成": {
+      "status": "PARTIAL",
+      "detail": "未检测到图片元素"
+    }
+  },
+  "timings": {
+    "页面加载": 3810,
+    "新建聊天": 3071,
+    "创建角色": 4647,
+    "普通聊天": 20564,
+    "Stop": 5039
+  },
+  "passed": 9,
+  "partial": 1,
+  "failed": 0
+}
