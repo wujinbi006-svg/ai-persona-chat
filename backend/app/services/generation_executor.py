@@ -34,6 +34,80 @@ def _get_latest_user_message(history):
     return ""
 
 
+async def _stream_with_cancel(chat_stream_agen, session: GenerationSession):
+    """
+    RC-2: 真正的 Stop - 包装 chat_stream，支持在 should_stop 时立即取消。
+
+    使用 asyncio.Queue + producer task 实现：
+    - producer task 从 chat_stream 读取 chunk，放入队列
+    - consumer 从队列读取 chunk，同时定期检查 should_stop
+    - 当 should_stop 为 true 时，取消 producer task，立即停止
+
+    保持流式输出：chunk 一到达就 yield，不会等待全部完成。
+    正确处理 asyncio.CancelledError，释放 HTTP 连接。
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _DONE = object()
+
+    async def _producer():
+        try:
+            async for chunk in chat_stream_agen:
+                await queue.put(chunk)
+                # 检查 should_stop，如果是则停止读取
+                if session.should_stop:
+                    break
+        except asyncio.CancelledError:
+            # 被取消，正常退出
+            pass
+        except Exception:
+            # 生产者异常，放入队列让消费者处理
+            pass
+        finally:
+            try:
+                await queue.put(_DONE)
+            except Exception:
+                pass
+
+    producer_task = asyncio.create_task(_producer())
+
+    try:
+        while True:
+            # 等待下一个 chunk，同时定期检查 should_stop
+            get_task = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait(
+                [get_task],
+                timeout=0.05,  # 50ms 检查一次 should_stop
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # 检查 should_stop，如果是则取消所有任务并返回
+            if session.should_stop:
+                producer_task.cancel()
+                get_task.cancel()
+                try:
+                    await producer_task
+                except asyncio.CancelledError:
+                    pass
+                return
+
+            if get_task in done:
+                chunk = get_task.result()
+                if chunk is _DONE:
+                    break
+                yield chunk
+            else:
+                # 超时，取消 get_task，继续循环
+                get_task.cancel()
+    finally:
+        # 确保 producer task 被取消
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
+
+
 async def execute_character_generation(
     session: GenerationSession,
     character,
@@ -90,16 +164,10 @@ async def execute_character_generation(
 
         full_content = ""
         try:
-            # 遗留问题3: 真正的 Stop - 在每个 chunk 之间检查 should_stop
-            # 对于大多数 LLM API（chunk 很小，通常几个字），检查频率已经足够高
-            # 点击停止后，当前 chunk 完成后立即停止，不会再生成下一个 chunk
-            # 当客户端断开连接时，FastAPI 会自动取消异步任务（asyncio.CancelledError）
-            async for chunk in chat_stream(messages):
-                # 检查是否被停止（每个 chunk 之间检查，响应迅速）
-                if session.should_stop:
-                    # 立即停止，不保存不完整的回复
-                    return
-
+            # RC-2: 真正的 Stop - 使用 _stream_with_cancel 包装 chat_stream
+            # 当 session.should_stop 为 true 时，立即取消当前 LLM streaming task
+            # 不再是"等当前 chunk 到达后停止"，而是真正取消正在执行的 HTTP stream
+            async for chunk in _stream_with_cancel(chat_stream(messages), session):
                 full_content += chunk
                 yield {
                     "type": "content",
