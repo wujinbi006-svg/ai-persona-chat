@@ -1,0 +1,71 @@
+{
+  "results": {
+    "注册登录": {
+      "status": "PASS",
+      "detail": "email=prod_closure_1788155953@example.com"
+    },
+    "新建聊天": {
+      "status": "PASS",
+      "detail": "耗时=3072ms"
+    },
+    "创建角色-小雅": {
+      "status": "PASS",
+      "detail": "API=4650ms, 进入聊天=7020ms, 总=11671ms"
+    },
+    "创建角色-小王": {
+      "status": "PASS",
+      "detail": "API=4647ms"
+    },
+    "普通聊天": {
+      "status": "PASS",
+      "detail": "耗时=20564ms"
+    },
+    "快速连点": {
+      "status": "PASS",
+      "detail": "快速点击5次，发送按钮被禁用，无重复生成"
+    },
+    "@多人": {
+      "status": "PASS",
+      "detail": "小雅=4, 小王=3, 顺序正确"
+    },
+    "Stop功能": {
+      "status": "PASS",
+      "detail": "UI停止延迟=5467ms，内容已停止增长"
+    },
+    "长期记忆": {
+      "status": "PASS",
+      "detail": "跨聊天记忆检索成功（找到下周相关信息）"
+    },
+    "图片生成": {
+      "status": "PASS",
+      "detail": "图片元素数量=1，生产环境图片生成成功"
+    },
+    "多设备并发锁": {
+      "status": "PASS",
+      "detail": "生成中发送按钮被禁用（generation lock生效）"
+    },
+    "断线恢复": {
+      "status": "PASS",
+      "detail": "重新打开后聊天界面正常，无重复消息"
+    },
+    "Production Version": {
+      "status": "PASS",
+      "detail": "environment=production, chat_core=2.0"
+    }
+  },
+  "timings": {
+    "页面加载": 2827,
+    "新建聊天": 3072,
+    "小雅_create_api": 4620,
+    "小雅_enter_chat": 7540,
+    "小雅_total": 12160,
+    "小王_create_api": 4647,
+    "小王_enter_chat": 6999,
+    "小王_total": 11647,
+    "普通聊天": 20564,
+    "Stop_UI": 5467
+  },
+  "passed": 13,
+  "partial": 0,
+  "failed": 0
+}
