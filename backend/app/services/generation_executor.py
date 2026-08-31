@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..services import conversation_service as svc
 from ..services import memory_service as mem_svc
+from ..services import fact_service as fact_svc
 from ..services.context_service import build_context
 from ..services.llm_client import chat_stream, LLMError
 from ..services.image_service import (
@@ -68,11 +69,23 @@ async def execute_character_generation(
         )
         memory_ids = [m.id for m in memories]
 
-        # 构建上下文
+        # 检索 Canonical Facts（已确认事实 + 假设 + 冲突事实）
+        # 事实与假设分离：hypothesis 不会自动成为 confirmed fact
+        try:
+            facts = fact_svc.get_facts(
+                db, user_id, conversation_id=conversation_id,
+                status_filter=["confirmed", "uncertain", "conflicted"],
+            )
+        except Exception:
+            # Facts 查询失败不影响主流程
+            facts = []
+
+        # 构建上下文（按优先级：Persona → Canonical Facts → Memories → Scene → History）
         messages = build_context(
             character, history, all_characters or [],
             conversation=conversation,
             memories=memories,
+            facts=facts,
         )
 
         full_content = ""
