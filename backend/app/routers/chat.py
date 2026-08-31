@@ -21,6 +21,7 @@ from ..services.llm_client import chat_stream, LLMError
 from ..services.stop_flags import set_stop, is_stopped, clear_stop
 from ..services.auth import get_current_user, check_rate_limit
 from ..services.image_service import detect_image_request, build_image_prompt, build_fallback_image_prompt, generate_image, ImageGenerationError
+from .legacy_compat import run_legacy_through_orchestrator, parse_mentions as legacy_parse_mentions
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -190,6 +191,12 @@ def _stream_character_response(db, conversation_id, character, all_characters, u
 
 @router.post("/stream")
 async def chat_stream_endpoint(body: ChatRequest, current_user: dict = Depends(get_current_user)):
+    """
+    遗留问题2: 旧接口 /stream 现在内部调用 ConversationOrchestrator 统一执行。
+
+    不再独立运行一套逻辑，而是通过 legacy_compat 适配器转发到 Orchestrator。
+    这样旧客户端和新客户端最终都使用同一个聊天内核。
+    """
     user_id = current_user["id"]
 
     if not check_rate_limit(user_id):
@@ -207,66 +214,30 @@ async def chat_stream_endpoint(body: ChatRequest, current_user: dict = Depends(g
         all_characters = svc.list_characters(db, body.conversation_id, user_id=user_id)
 
         # 解析 @角色
-        mentioned_ids, cleaned_message = _parse_mentions(body.message, all_characters)
+        mentioned_ids, cleaned_message = legacy_parse_mentions(body.message, all_characters)
         actual_message = cleaned_message or body.message
 
-        # 保存用户消息（使用原始消息，保留@标记）
-        svc.add_message(db, body.conversation_id, user_id, "user", body.message)
+        # 确定策略和角色
+        strategy = "specific"
+        character_ids = None
 
-        # 第一条用户消息生成标题
-        all_msgs = svc.get_messages(db, body.conversation_id, user_id=user_id)
-        user_count = sum(1 for m in all_msgs if m.role == "user")
-        if user_count == 1:
-            svc.update_conversation(db, body.conversation_id, user_id=user_id, title=svc.generate_title_from_message(actual_message))
-
-        # 确定要回复的角色列表
-        reply_characters = []
-
-        # 优先级1：@角色（按出现顺序）
         if mentioned_ids:
-            char_map = {c.id: c for c in all_characters}
-            reply_characters = [char_map[cid] for cid in mentioned_ids if cid in char_map]
-
-        # 优先级2：智能模式
-        elif body.mode == "smart" and all_characters:
-            smart_ids = await router_svc.route_speaker(
-                db, body.conversation_id, user_id, actual_message, all_characters, all_msgs
-            )
-            char_map = {c.id: c for c in all_characters}
-            reply_characters = [char_map[cid] for cid in smart_ids if cid in char_map]
-            if not reply_characters and all_characters:
-                reply_characters = [all_characters[0]]
-
-        # 优先级3：手动指定角色
+            strategy = "mention"
+            character_ids = mentioned_ids
+        elif body.mode == "smart":
+            strategy = "smart"
         elif body.character_id:
-            character = svc.get_character(db, body.character_id, user_id=user_id)
-            if character:
-                reply_characters = [character]
+            character_ids = [body.character_id]
 
-        # 不指定角色且无@ → 只保存消息
-        if not reply_characters:
-            async def just_done():
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            return StreamingResponse(just_done(), media_type="text/event-stream")
-
-        async def event_gen():
-            for char in reply_characters:
-                yield f"data: {json.dumps({
-                    'type': 'character_start',
-                    'character_id': char.id,
-                    'character_name': char.name,
-                }, ensure_ascii=False)}\n\n"
-                db2 = SessionLocal()
-                try:
-                    conv2 = svc.get_conversation(db2, body.conversation_id, user_id=user_id)
-                    latest_chars = svc.list_characters(db2, body.conversation_id, user_id=user_id)
-                    async for line in _stream_character_response(db2, body.conversation_id, char, latest_chars, user_id, conversation=conv2):
-                        yield line
-                finally:
-                    db2.close()
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
+        # 通过 Orchestrator 统一执行
+        return StreamingResponse(
+            run_legacy_through_orchestrator(
+                db, body.conversation_id, user_id, actual_message,
+                mode="normal", strategy=strategy,
+                character_ids=character_ids, mentioned_ids=mentioned_ids,
+            ),
+            media_type="text/event-stream",
+        )
 
     finally:
         db.close()
