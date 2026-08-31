@@ -245,6 +245,12 @@ async def chat_stream_endpoint(body: ChatRequest, current_user: dict = Depends(g
 
 @router.post("/reply-all")
 async def reply_all_endpoint(body: ReplyAllRequest, current_user: dict = Depends(get_current_user)):
+    """
+    RC-2: 旧接口 /reply-all 现在内部调用 ConversationOrchestrator 统一执行。
+
+    不再独立运行一套逻辑，而是通过 legacy_compat 适配器转发到 Orchestrator。
+    mode="group"：所有角色依次回复。
+    """
     user_id = current_user["id"]
     if not check_rate_limit(user_id):
         raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
@@ -257,9 +263,6 @@ async def reply_all_endpoint(body: ReplyAllRequest, current_user: dict = Depends
                 iter([f"data: {json.dumps({'type': 'error', 'message': '会话不存在'})}\n\n"]),
                 media_type="text/event-stream",
             )
-
-        if body.message:
-            svc.add_message(db, body.conversation_id, user_id, "user", body.message)
 
         all_characters = svc.list_characters(db, body.conversation_id, user_id=user_id)
         if not all_characters:
@@ -267,37 +270,29 @@ async def reply_all_endpoint(body: ReplyAllRequest, current_user: dict = Depends
                 yield f"data: {json.dumps({'type': 'error', 'message': '当前会话没有角色'}, ensure_ascii=False)}\n\n"
             return StreamingResponse(no_chars(), media_type="text/event-stream")
 
-        clear_stop(body.conversation_id)
+        # 通过 Orchestrator 统一执行（mode="group"：所有角色依次回复）
+        # 用户消息由 run_legacy_through_orchestrator 内部保存
+        return StreamingResponse(
+            run_legacy_through_orchestrator(
+                db, body.conversation_id, user_id, body.message or "",
+                mode="group", strategy="specific",
+                character_ids=[c.id for c in all_characters],
+            ),
+            media_type="text/event-stream",
+        )
 
-        async def event_gen():
-            for char in all_characters:
-                if is_stopped(body.conversation_id):
-                    break
-                yield f"data: {json.dumps({
-                    'type': 'character_start', 'character_id': char.id, 'character_name': char.name,
-                }, ensure_ascii=False)}\n\n"
-                db2 = SessionLocal()
-                try:
-                    conv2 = svc.get_conversation(db2, body.conversation_id, user_id=user_id)
-                    latest_chars = svc.list_characters(db2, body.conversation_id, user_id=user_id)
-                    async for line in _stream_character_response(db2, body.conversation_id, char, latest_chars, user_id, conversation=conv2):
-                        yield line
-                        if is_stopped(body.conversation_id):
-                            break
-                finally:
-                    db2.close()
-                if is_stopped(body.conversation_id):
-                    break
-            clear_stop(body.conversation_id)
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
     finally:
         db.close()
 
 
 @router.post("/discussion")
 async def discussion_endpoint(body: DiscussionRequest, current_user: dict = Depends(get_current_user)):
+    """
+    RC-2: 旧接口 /discussion 现在内部调用 ConversationOrchestrator 统一执行。
+
+    不再独立运行一套逻辑，而是通过 legacy_compat 适配器转发到 Orchestrator。
+    多轮讨论：循环调用 Orchestrator，每轮所有选中角色依次回复。
+    """
     user_id = current_user["id"]
     if not check_rate_limit(user_id):
         raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
@@ -310,9 +305,6 @@ async def discussion_endpoint(body: DiscussionRequest, current_user: dict = Depe
                 iter([f"data: {json.dumps({'type': 'error', 'message': '会话不存在'})}\n\n"]),
                 media_type="text/event-stream",
             )
-
-        if body.message:
-            svc.add_message(db, body.conversation_id, user_id, "user", body.message)
 
         all_characters = svc.list_characters(db, body.conversation_id, user_id=user_id)
         char_map = {c.id: c for c in all_characters}
@@ -322,34 +314,29 @@ async def discussion_endpoint(body: DiscussionRequest, current_user: dict = Depe
                 yield f"data: {json.dumps({'type': 'error', 'message': '未选择有效角色'}, ensure_ascii=False)}\n\n"
             return StreamingResponse(no_sel(), media_type="text/event-stream")
 
-        clear_stop(body.conversation_id)
+        selected_ids = [c.id for c in selected]
 
-        async def event_gen():
+        async def discussion_gen():
+            # 第一轮：保存用户消息（如果有）
+            first_message = body.message or ""
             for round_num in range(body.rounds):
-                if is_stopped(body.conversation_id):
-                    break
-                for char in selected:
-                    if is_stopped(body.conversation_id):
-                        break
-                    yield f"data: {json.dumps({
-                        'type': 'character_start', 'character_id': char.id, 'character_name': char.name, 'round': round_num + 1,
-                    }, ensure_ascii=False)}\n\n"
-                    db2 = SessionLocal()
-                    try:
-                        conv2 = svc.get_conversation(db2, body.conversation_id, user_id=user_id)
-                        latest_chars = svc.list_characters(db2, body.conversation_id, user_id=user_id)
-                        async for line in _stream_character_response(db2, body.conversation_id, char, latest_chars, user_id, conversation=conv2):
-                            yield line
-                            if is_stopped(body.conversation_id):
-                                break
-                    finally:
-                        db2.close()
-                if is_stopped(body.conversation_id):
-                    break
-            clear_stop(body.conversation_id)
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                # 每轮通过 Orchestrator 统一执行（mode="group"）
+                # 第一轮使用用户消息，后续轮次使用空消息（让 AI 继续讨论）
+                round_message = first_message if round_num == 0 else ""
+                async for event in run_legacy_through_orchestrator(
+                    db, body.conversation_id, user_id, round_message,
+                    mode="group", strategy="specific",
+                    character_ids=selected_ids,
+                ):
+                    yield event
+                    # 检查是否被停止（通过事件中的 error 类型判断）
+                    if '"type": "error"' in event and '当前正在回复' in event:
+                        return
+                # 轮次间短暂等待
+                await asyncio.sleep(0.3)
 
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
+        return StreamingResponse(discussion_gen(), media_type="text/event-stream")
+
     finally:
         db.close()
 
@@ -359,9 +346,11 @@ async def discussion_endpoint(body: DiscussionRequest, current_user: dict = Depe
 @router.post("/drama/stream")
 async def drama_stream_endpoint(body: DramaStartRequest, current_user: dict = Depends(get_current_user)):
     """
-    戏剧模式 SSE 端点。
-    角色A → 等待 → 角色B → 等待 → ...
-    支持暂停/继续/停止，支持用户插话。
+    RC-2: 旧接口 /drama/stream 现在内部调用 ConversationOrchestrator 统一执行。
+
+    不再独立运行一套逻辑，而是通过 legacy_compat 适配器转发到 Orchestrator。
+    保持旧接口的固定轮数行为（兼容旧客户端），但内部使用 Orchestrator 统一执行。
+    每轮所有选中角色依次回复，支持暂停/继续/停止（通过旧的 _drama_state）。
     """
     user_id = current_user["id"]
     if not check_rate_limit(user_id):
@@ -392,7 +381,9 @@ async def drama_stream_endpoint(body: DramaStartRequest, current_user: dict = De
                 yield f"data: {json.dumps({'type': 'error', 'message': '未选择有效角色'}, ensure_ascii=False)}\n\n"
             return StreamingResponse(no_sel(), media_type="text/event-stream")
 
-        # 初始化戏剧状态
+        selected_ids = [c.id for c in selected]
+
+        # 初始化戏剧状态（保持旧接口的暂停/继续/停止机制）
         _drama_state[body.conversation_id] = {"paused": False, "stopped": False}
         clear_stop(body.conversation_id)
 
@@ -405,12 +396,17 @@ async def drama_stream_endpoint(body: DramaStartRequest, current_user: dict = De
             for round_num in range(total_rounds):
                 if _drama_state.get(body.conversation_id, {}).get("stopped"):
                     break
-                if is_stopped(body.conversation_id):
-                    break
 
                 yield f"data: {json.dumps({'type': 'round_start', 'round': round_num + 1}, ensure_ascii=False)}\n\n"
 
-                for char in selected:
+                # 每轮通过 Orchestrator 统一执行（mode="group"）
+                # 第一轮使用用户消息（如果有），后续轮次使用空消息
+                round_message = body.message if (round_num == 0 and body.message) else ""
+                async for event in run_legacy_through_orchestrator(
+                    db, body.conversation_id, user_id, round_message,
+                    mode="group", strategy="specific",
+                    character_ids=selected_ids,
+                ):
                     # 检查暂停
                     while _drama_state.get(body.conversation_id, {}).get("paused"):
                         if _drama_state.get(body.conversation_id, {}).get("stopped"):
@@ -420,34 +416,17 @@ async def drama_stream_endpoint(body: DramaStartRequest, current_user: dict = De
 
                     if _drama_state.get(body.conversation_id, {}).get("stopped"):
                         break
-                    if is_stopped(body.conversation_id):
-                        break
 
-                    yield f"data: {json.dumps({
-                        'type': 'character_start',
-                        'character_id': char.id,
-                        'character_name': char.name,
-                        'round': round_num + 1,
-                    }, ensure_ascii=False)}\n\n"
+                    yield event
 
-                    db2 = SessionLocal()
-                    try:
-                        conv2 = svc.get_conversation(db2, body.conversation_id, user_id=user_id)
-                        latest_chars = svc.list_characters(db2, body.conversation_id, user_id=user_id)
-                        async for line in _stream_character_response(db2, body.conversation_id, char, latest_chars, user_id, conversation=conv2):
-                            yield line
-                            if _drama_state.get(body.conversation_id, {}).get("stopped"):
-                                break
-                            if is_stopped(body.conversation_id):
-                                break
-                    finally:
-                        db2.close()
-
-                    # 角色间等待
-                    if interval > 0 and char != selected[-1]:
-                        await asyncio.sleep(interval)
+                if _drama_state.get(body.conversation_id, {}).get("stopped"):
+                    break
 
                 yield f"data: {json.dumps({'type': 'round_done', 'round': round_num + 1}, ensure_ascii=False)}\n\n"
+
+                # 轮次间等待
+                if interval > 0 and round_num < total_rounds - 1:
+                    await asyncio.sleep(interval)
 
             _drama_state.pop(body.conversation_id, None)
             clear_stop(body.conversation_id)
