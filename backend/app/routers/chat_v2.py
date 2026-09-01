@@ -6,9 +6,20 @@ Chat Core 2.0 - 统一聊天路由（v2）
 
 这是 Phase 1 的集成层。旧的 /api/chat/* 路由保持不变，向后兼容。
 前端将在 Phase 2/6 逐步迁移到这个新接口。
+
+性能 Trace 时间点：
+- T2 = 后端收到请求（函数入口）
+- T3 = Auth 验证完成
+- T4 = Conversation / Character 查询完成
+- T7 = ResponsePlan 开始
+- T8 = ResponsePlan 完成
+- T9 = GenerationSession 创建完成
+- T16 = 完整回复结束
+- T5/T6/T10~T13 在 generation_executor 和 llm_client 中标记
 """
 import json
-from fastapi import APIRouter, Depends, HTTPException
+import time
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -22,6 +33,7 @@ from ..services import conversation_service as svc
 from ..services import router_service as router_svc
 from ..services import generation_session_service as gs_svc
 from ..services.auth import get_current_user, check_rate_limit
+from ..services.trace import RequestTrace, is_cold_start
 from ..database import SessionLocal
 
 router = APIRouter(prefix="/api/chat/v2", tags=["chat-v2"])
@@ -104,14 +116,48 @@ def _smart_router(user_message: str, characters) -> List[int]:
 # ============================================================
 
 @router.post("/generate")
-async def generate(body: GenerateRequest, current_user: dict = Depends(get_current_user)):
+async def generate(
+    body: GenerateRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """
     统一生成接口。
 
     所有模式（普通/群聊/剧情）和发言策略（指定/@/智能）都走这一个入口。
     返回 SSE 事件流。
     """
+    # T2: 后端收到请求
+    trace = RequestTrace()
+    trace.mark("t2_backend_received")
+    trace.mode = body.mode
+    trace.strategy = body.strategy
+    trace.conversation_id = body.conversation_id
+    trace.user_id = current_user.get("id", "")
+
+    # 检测冷启动
+    trace.cold_start = is_cold_start()
+
+    # 从请求头获取前端时间点（如果前端发送了 X-Trace-T0 / X-Trace-T1）
+    # 前端使用 performance.now()，后端使用 time.perf_counter()，两者时钟不同
+    # 这里只记录原始值，前端会在收到 trace_data 时自己计算相对值
+    t0_header = request.headers.get("X-Trace-T0")
+    t1_header = request.headers.get("X-Trace-T1")
+    if t0_header:
+        try:
+            trace.t0_user_click = float(t0_header)
+        except (ValueError, TypeError):
+            pass
+    if t1_header:
+        try:
+            trace.t1_post_sent = float(t1_header)
+        except (ValueError, TypeError):
+            pass
+
     user_id = current_user["id"]
+
+    # T3: Auth 已完成（Depends(get_current_user) 已执行）
+    trace.mark("t3_auth_done")
 
     if not check_rate_limit(user_id):
         raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
@@ -157,8 +203,14 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
     finally:
         db.close()
 
+    # T4: DB 查询完成
+    trace.mark("t4_db_query_done")
+
     # 获取全局 Orchestrator
     orch = get_orchestrator()
+
+    # T7: ResponsePlan 开始
+    trace.mark("t7_plan_start")
 
     # 规划 ResponsePlan
     plan = orch.plan(
@@ -173,6 +225,9 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
         drama_config=body.drama_config,
         smart_router_fn=_smart_router if strategy == SpeakerStrategy.SMART else None,
     )
+
+    # T8: ResponsePlan 完成
+    trace.mark("t8_plan_done")
 
     # 如果请求中指定了 generation_id，使用它（用于剧情模式的持续生成）
     if body.generation_id:
@@ -208,12 +263,16 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
     finally:
         db_session.close()
 
-    # 定义角色生成器（闭包捕获 conversation 和 all_characters）
+    # T9: GenerationSession 创建完成
+    trace.mark("t9_session_created")
+
+    # 定义角色生成器（闭包捕获 conversation 和 all_characters，以及 trace）
     async def character_generator(session, character):
         async for event in execute_character_generation(
             session, character,
             all_characters=characters,
             conversation=conv,
+            trace=trace,
         ):
             yield event
 
@@ -249,6 +308,9 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
             final_error = str(e)[:200]
             yield f"data: {json.dumps({'type': 'generation_error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
+            # T16: 完整回复结束
+            trace.mark("t16_complete")
+
             # Phase 3: 更新最终状态到数据库
             db_final = SessionLocal()
             try:
@@ -258,6 +320,13 @@ async def generate(body: GenerateRequest, current_user: dict = Depends(get_curre
                 )
             finally:
                 db_final.close()
+
+            # 输出 trace 摘要到日志
+            trace.log_summary()
+
+            # 发送 trace_data 事件（前端可用于性能分析）
+            trace_data = trace.to_dict()
+            yield f"data: {json.dumps({'type': 'trace_data', 'trace': trace_data}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -467,7 +536,7 @@ async def drama_start(body: DramaStartRequest, current_user: dict = Depends(get_
     finally:
         db_session.close()
 
-    # 剧情模式持续运行生成器
+    # 剧情模式持续运行生成器（不使用 trace，剧情模式是长连接）
     async def drama_character_generator(session, character):
         async for event in execute_character_generation(
             session, character,

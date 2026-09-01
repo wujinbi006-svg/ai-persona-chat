@@ -33,12 +33,17 @@ class Settings:
     # 限流
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 
-    # 图片生成（豆包视觉 / 火山方舟）
+    # 图片生成（GK Image 2.0 / 小羽毛AI聚合平台 - 当前使用）
+    IMAGE_API_BASE_URL: str = os.getenv("IMAGE_API_BASE_URL", "https://api.lk888.ai")
+    IMAGE_API_KEY: str = os.getenv("IMAGE_API_KEY", "")
+    IMAGE_MODEL: str = os.getenv("IMAGE_MODEL", "gk-image-2.0")
+    IMAGE_OUTPUT_DIR: str = os.getenv("IMAGE_OUTPUT_DIR", "data/generated_images")
+    IMAGE_TIMEOUT: float = float(os.getenv("IMAGE_TIMEOUT", "180"))
+
+    # 图片生成（豆包视觉 / 火山方舟 - 保留作为回滚备用）
     DOUBAO_VISION_API_KEY: str = os.getenv("DOUBAO_VISION_API_KEY", "")
     DOUBAO_VISION_BASE_URL: str = os.getenv("DOUBAO_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
     DOUBAO_VISION_MODEL: str = os.getenv("DOUBAO_VISION_MODEL", "")
-    IMAGE_OUTPUT_DIR: str = os.getenv("IMAGE_OUTPUT_DIR", "data/generated_images")
-    IMAGE_TIMEOUT: float = float(os.getenv("IMAGE_TIMEOUT", "120"))
 
 
 settings = Settings()

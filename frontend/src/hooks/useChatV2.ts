@@ -7,6 +7,7 @@
  * 3. 本地状态直接更新：SSE 事件携带完整数据，直接 append，不重新拉取整个列表
  * 4. 生成锁：前端防止重复点击（后端也有 ConversationLock 双重保障）
  * 5. AbortController：真正取消请求（停止不只是视觉效果）
+ * 6. 性能 Trace：记录 T0~T16 时间点，输出 TTFT 和完整响应时间
  *
  * 这是 Phase 2 的核心，后续 Phase 6 UI 收敛时会替换 App.tsx 中的旧逻辑。
  * 目前与旧逻辑并存，不破坏现有功能。
@@ -38,6 +39,77 @@ export interface UseChatV2Options {
   conversationId: number | null
   characters: Character[]
   initialMessages?: Message[]
+  onTraceData?: (trace: PerfTraceData) => void  // Trace 数据回调
+}
+
+// ============================================================
+// 性能 Trace 类型
+// ============================================================
+
+export interface PerfTraceData {
+  trace_id: string
+  mode: string
+  strategy: string
+  conversation_id: number
+  cold_start: boolean
+  llm_request_count: number
+  retry_count: number
+  // 前端时间点（performance.now() 毫秒）
+  t0_user_click: number | null
+  t1_post_sent: number | null
+  t14_first_sse_browser: number | null
+  t15_ui_first_token: number | null
+  t16_complete: number | null
+  // 后端时间点（相对于 T2 的毫秒）
+  t2_backend_received_ms: number
+  t3_auth_done_ms: number | null
+  t4_db_query_done_ms: number | null
+  t5_memory_start_ms: number | null
+  t6_memory_done_ms: number | null
+  t7_plan_start_ms: number | null
+  t8_plan_done_ms: number | null
+  t9_session_created_ms: number | null
+  t10_llm_request_sent_ms: number | null
+  t11_llm_connection_ms: number | null
+  t12_llm_streaming_start_ms: number | null
+  t13_first_token_backend_ms: number | null
+  t16_complete_ms: number | null
+  // 关键耗时区间
+  durations: {
+    frontend_to_backend_ms: number | null
+    auth_ms: number | null
+    db_query_ms: number | null
+    memory_retrieval_ms: number | null
+    response_plan_ms: number | null
+    session_creation_ms: number | null
+    llm_connection_ms: number | null
+    llm_ttft_ms: number | null
+    llm_generation_ms: number | null
+    total_backend_ms: number | null
+    time_to_first_token_ms: number | null
+  }
+  // 逐角色 trace
+  speaker_traces: Array<{
+    character_id: number
+    character_name: string
+    speaker_index: number
+    llm_request_sent_ms: number | null
+    llm_connection_ms: number | null
+    llm_streaming_start_ms: number | null
+    first_token_backend_ms: number | null
+    generation_complete_ms: number | null
+    token_count: number
+    error: string | null
+    ttft_ms: number | null
+    generation_duration_ms: number | null
+  }>
+  // 前端计算的关键指标
+  frontend_metrics: {
+    ttft_ms: number | null       // T0 -> T15（用户点击到 UI 显示首 token）
+    full_response_ms: number | null  // T0 -> T16（用户点击到完整回复结束）
+    sse_latency_ms: number | null    // T1 -> T14（POST 发出到首个 SSE 事件）
+    ui_render_ms: number | null       // T14 -> T15（SSE 事件到 UI 渲染）
+  }
 }
 
 // ============================================================
@@ -54,7 +126,7 @@ function generateOptimisticId(): number {
 // Hook 实现
 // ============================================================
 
-export function useChatV2({ conversationId, characters, initialMessages = [] }: UseChatV2Options) {
+export function useChatV2({ conversationId, characters, initialMessages = [], onTraceData }: UseChatV2Options) {
   // 消息列表（乐观更新直接修改这个状态）
   const [messages, setMessages] = useState<Message[]>(initialMessages)
 
@@ -77,6 +149,7 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesRef = useRef<Message[]>(initialMessages)
   const generationRef = useRef<GenerationState>(generation)
+  const onTraceDataRef = useRef(onTraceData)
 
   // 同步 ref
   useEffect(() => {
@@ -86,6 +159,10 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
   useEffect(() => {
     generationRef.current = generation
   }, [generation])
+
+  useEffect(() => {
+    onTraceDataRef.current = onTraceData
+  }, [onTraceData])
 
   // ============================================================
   // 工具函数
@@ -269,6 +346,7 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
         break
       }
 
+      // trace_data 事件不在此处处理，在 sendMessage 中处理
       default:
         // 未知事件类型，忽略
         break
@@ -276,7 +354,7 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
   }, [conversationId, findCharacter, appendMessage])
 
   // ============================================================
-  // 发送消息（乐观更新 + v2 统一接口）
+  // 发送消息（乐观更新 + v2 统一接口 + 性能 Trace）
   // ============================================================
 
   const sendMessage = useCallback(async (params: {
@@ -304,6 +382,9 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
 
     const { message, mode = 'normal', strategy = 'specific', characterId, mentionedCharacterIds, dramaConfig } = params
 
+    // T0: 用户点击发送
+    const t0 = performance.now()
+
     // 1. 乐观更新：立即显示用户消息
     const optimisticUserMsg: Message = {
       id: generateOptimisticId(),
@@ -329,8 +410,20 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
       errorMessage: null,
     }))
 
+    // Trace 时间点记录
+    let t1: number | null = null       // T1: 前端 POST 发出
+    let t14: number | null = null      // T14: 第一个 SSE event 到达浏览器
+    let t15: number | null = null      // T15: UI 显示第一个 token
+    let t16: number | null = null      // T16: 完整回复结束
+    let firstSSEEvent = false
+    let firstContentToken = false
+    let backendTrace: any = null
+
     try {
-      // 4. 调用 v2 统一接口
+      // T1: 前端 POST 发出（在调用 api.chatV2Generate 前标记）
+      t1 = performance.now()
+
+      // 4. 调用 v2 统一接口（传递 T0/T1 给后端）
       const stream = api.chatV2Generate({
         conversation_id: conversationId,
         message,
@@ -339,6 +432,8 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
         character_id: characterId,
         mentioned_character_ids: mentionedCharacterIds,
         drama_config: dramaConfig,
+        traceT0: t0,
+        traceT1: t1,
       })
 
       // 5. 处理 SSE 事件流
@@ -347,6 +442,24 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
 
       for await (const event of stream) {
         if (controller.signal.aborted) break
+
+        // T14: 第一个 SSE event 到达浏览器
+        if (!firstSSEEvent) {
+          firstSSEEvent = true
+          t14 = performance.now()
+        }
+
+        // 处理 trace_data 事件（后端返回的完整 trace）
+        if (event.type === 'trace_data') {
+          backendTrace = event.trace
+          continue
+        }
+
+        // T15: UI 显示第一个 token（第一个 content 事件）
+        if (event.type === 'content' && !firstContentToken) {
+          firstContentToken = true
+          t15 = performance.now()
+        }
 
         // 追踪当前角色的完整回复（用于保存到本地状态）
         if (event.type === 'character_started') {
@@ -377,6 +490,9 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
         handleSSEEvent(event)
       }
 
+      // T16: 完整回复结束
+      t16 = performance.now()
+
       // 如果流正常结束但没有收到 generation_completed，确保状态重置
       if ((generationRef.current.status as string) === 'running') {
         setGeneration(prev => ({
@@ -391,6 +507,7 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
     } catch (error: any) {
       if (controller.signal.aborted) {
         // 用户主动停止，不算错误
+        t16 = performance.now()
         setGeneration(prev => ({
           ...prev,
           status: 'stopped',
@@ -409,6 +526,32 @@ export function useChatV2({ conversationId, characters, initialMessages = [] }: 
     } finally {
       abortControllerRef.current = null
       setImageGeneratingCharacter(null)
+
+      // 输出性能 Trace 数据
+      if (backendTrace && t0 && t16) {
+        const perfData: PerfTraceData = {
+          ...backendTrace,
+          t0_user_click: t0,
+          t1_post_sent: t1,
+          t14_first_sse_browser: t14,
+          t15_ui_first_token: t15,
+          t16_complete: t16,
+          frontend_metrics: {
+            ttft_ms: t15 ? Math.round(t15 - t0) : null,
+            full_response_ms: Math.round(t16 - t0),
+            sse_latency_ms: t14 && t1 ? Math.round(t14 - t1) : null,
+            ui_render_ms: t15 && t14 ? Math.round(t15 - t14) : null,
+          },
+        }
+
+        // 输出到控制台（便于调试）
+        console.log('[PerfTrace]', JSON.stringify(perfData, null, 2))
+
+        // 调用回调
+        if (onTraceDataRef.current) {
+          onTraceDataRef.current(perfData)
+        }
+      }
     }
   }, [conversationId, appendMessage, handleSSEEvent, findCharacter])
 
