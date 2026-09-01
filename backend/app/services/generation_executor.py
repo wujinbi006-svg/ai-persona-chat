@@ -3,10 +3,16 @@ Chat Core 2.0 - Generation Executor（生成执行器）
 
 把现有的角色回复生成逻辑包装成 Orchestrator 需要的 character_generator 格式。
 这是旧代码和新内核之间的适配器层。
+
+性能 Trace 时间点：
+- T5 = Memory 检索开始
+- T6 = Memory 检索完成
+- 角色级 trace：speaker_start / llm_request / first_token / complete
 """
 import asyncio
 import json
-from typing import AsyncGenerator, Dict, Any
+import time
+from typing import AsyncGenerator, Dict, Any, Optional, TYPE_CHECKING
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -20,6 +26,9 @@ from ..services.image_service import (
     build_fallback_image_prompt, generate_image, ImageGenerationError,
 )
 from .orchestrator import GenerationSession
+
+if TYPE_CHECKING:
+    from .trace import RequestTrace
 
 
 # 后台记忆提取任务跟踪（防止任务被 GC）
@@ -113,6 +122,7 @@ async def execute_character_generation(
     character,
     all_characters=None,
     conversation=None,
+    trace: Optional["RequestTrace"] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     执行单个角色的生成，产出 Orchestrator 格式的事件。
@@ -125,8 +135,25 @@ async def execute_character_generation(
     - image_done: 图片生成完成
     - image_error: 图片生成失败
     - error: 生成错误
+
+    Args:
+        session: GenerationSession 实例
+        character: 角色对象
+        all_characters: 所有角色列表
+        conversation: 会话对象
+        trace: 可选的性能 trace 对象
     """
+    # 标记角色开始（用于逐角色 trace）
+    if trace:
+        trace.mark_speaker_start(
+            character_id=character.id,
+            character_name=getattr(character, "name", ""),
+            speaker_index=session.current_speaker_index,
+        )
+
     db = SessionLocal()
+    token_count = 0
+    generation_error = None
     try:
         conversation_id = session.conversation_id
         user_id = session.user_id
@@ -134,6 +161,10 @@ async def execute_character_generation(
         history = svc.get_messages(db, conversation_id, user_id=user_id)
         latest_user_msg = _get_latest_user_message(history)
         wants_image = detect_image_request(latest_user_msg)
+
+        # T5: Memory 检索开始
+        if trace:
+            trace.mark("t5_memory_start")
 
         # 检索相关记忆
         memories = mem_svc.retrieve_relevant_memories(
@@ -154,6 +185,10 @@ async def execute_character_generation(
             # Facts 查询失败不影响主流程
             facts = []
 
+        # T6: Memory 检索完成
+        if trace:
+            trace.mark("t6_memory_done")
+
         # 构建上下文（按优先级：Persona → Canonical Facts → Memories → Scene → History）
         messages = build_context(
             character, history, all_characters or [],
@@ -167,8 +202,9 @@ async def execute_character_generation(
             # RC-2: 真正的 Stop - 使用 _stream_with_cancel 包装 chat_stream
             # 当 session.should_stop 为 true 时，立即取消当前 LLM streaming task
             # 不再是"等当前 chunk 到达后停止"，而是真正取消正在执行的 HTTP stream
-            async for chunk in _stream_with_cancel(chat_stream(messages), session):
+            async for chunk in _stream_with_cancel(chat_stream(messages, trace=trace), session):
                 full_content += chunk
+                token_count += len(chunk)
                 yield {
                     "type": "content",
                     "character_id": character.id,
@@ -178,6 +214,8 @@ async def execute_character_generation(
 
             # 如果被停止，不保存不完整的回复
             if session.should_stop:
+                if trace:
+                    trace.mark_speaker_complete(token_count=token_count, error="stopped")
                 return
 
             # 标记记忆已使用
@@ -298,6 +336,7 @@ async def execute_character_generation(
             bg_task.add_done_callback(_background_memory_tasks.discard)
 
         except LLMError as e:
+            generation_error = e.message
             yield {
                 "type": "error",
                 "character_id": character.id,
@@ -305,6 +344,7 @@ async def execute_character_generation(
                 "message": e.message,
             }
         except Exception as e:
+            generation_error = str(e)[:200]
             yield {
                 "type": "error",
                 "character_id": character.id,
@@ -313,3 +353,6 @@ async def execute_character_generation(
             }
     finally:
         db.close()
+        # 标记角色完成
+        if trace:
+            trace.mark_speaker_complete(token_count=token_count, error=generation_error)
