@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,17 +8,25 @@ from .database import engine, Base
 from .migrations import run_migrations
 from .routers import conversations, chat, characters, chat_v2
 from .config import settings
+from .services.llm_client import close_shared_client
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await close_shared_client()
 
 Base.metadata.create_all(bind=engine)
 run_migrations()
 
-app = FastAPI(title="AI 人格聊天平台", version="3.1.0")
+app = FastAPI(title="AI 人格聊天平台", version="3.1.0", lifespan=lifespan)
 
 # Production Closure: Release Version 标识
 # 从环境变量获取版本号、commit hash、环境信息
 APP_VERSION = os.getenv("APP_VERSION", "Chat Core 2.0")
-APP_COMMIT = os.getenv("APP_COMMIT", "unknown")
+APP_COMMIT = os.getenv("APP_COMMIT") or os.getenv("RENDER_GIT_COMMIT") or "unknown"
 APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "production")
+BUILD_TIME = os.getenv("BUILD_TIME") or os.getenv("RENDER_GIT_COMMIT", "")
 
 # CORS - Production Closure: 优先通过 FRONTEND_URL 环境变量管理
 # 生产环境只允许正式前端，不再硬编码多个 Staging URL
@@ -62,9 +71,11 @@ def health():
 @app.get("/api/version")
 def version():
     return {
+        "service": "ai-persona-backend",
         "version": APP_VERSION,
         "commit": APP_COMMIT,
         "environment": APP_ENVIRONMENT,
+        "build_time": BUILD_TIME,
         "app_name": "AI 人格聊天平台",
         "chat_core": "2.0",
     }
