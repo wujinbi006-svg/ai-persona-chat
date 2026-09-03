@@ -43,6 +43,8 @@ export default function App() {
 
   // 戏剧模式状态
   const [isDramaActive, setIsDramaActive] = useState(false)
+  const conversationCache = useRef(new Map<number, { conv: Conversation; chars: Character[]; msgs: Message[] }>())
+  const loadSequence = useRef(0)
   const [dramaRound, setDramaRound] = useState(0)
 
   useEffect(() => {
@@ -91,15 +93,25 @@ export default function App() {
   // 移除重复的 listCharacters 调用
   // ============================================================
   const loadConversationData = useCallback(async (id: number) => {
+    const sequence = ++loadSequence.current
+    const cached = conversationCache.current.get(id)
+    if (cached) {
+      setConversations((prev) => prev.map((c) => (c.id === id ? cached.conv : c)))
+      setCharacters(cached.chars)
+      setMessages(cached.msgs)
+    }
     try {
       const [conv, chars, msgs] = await Promise.all([
         api.getConversation(id),
         api.listCharacters(id),
         api.getMessages(id),
       ])
+      if (sequence !== loadSequence.current) return cached?.chars || []
       setConversations((prev) => prev.map((c) => (c.id === id ? conv : c)))
       setCharacters(chars)
       setMessages(msgs)
+      conversationCache.current.set(id, { conv, chars, msgs })
+      if (sequence === loadSequence.current) setView(chars.length > 0 ? 'chat' : 'setup')
       return chars
     } catch (e) {
       setError('加载数据失败')
@@ -134,18 +146,16 @@ export default function App() {
     setSidebarOpen(false)
 
     // 如果本地已有该对话的 characters，立即进入聊天视图
-    const existingChars = characters
+    const existingChars = conversationCache.current.get(id)?.chars || []
     if (existingChars.length > 0) {
       setView('chat')
     }
 
     // 后台加载数据
-    const chars = await loadConversationData(id)
-    if (chars.length === 0) {
-      setView('setup')
-    } else {
-      setView('chat')
-    }
+    // 先展示聊天壳层，数据到达后再补齐角色/消息，避免三路请求形成可感知阻塞。
+    setView(existingChars.length > 0 ? 'chat' : 'setup')
+    // 不阻塞点击事件：数据在后台刷新，视图切换应立即对用户可见。
+    void loadConversationData(id)
   }
 
   const handleNew = () => {
