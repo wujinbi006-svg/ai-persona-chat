@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List
+import logging
+import time
+import uuid
 from ..database import get_db
 from ..schemas.conversation import (
     ConversationCreate, ConversationUpdate, ConversationOut, MessageOut
@@ -9,11 +12,30 @@ from ..services import conversation_service as svc
 from ..services.auth import get_current_user
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=ConversationOut)
-def create_conversation(body: ConversationCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    return svc.create_conversation(db, user_id=current_user["id"], title=body.title)
+def create_conversation(
+    body: ConversationCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    trace_id = uuid.uuid4().hex[:12]
+    started = time.perf_counter()
+    logger.info("CREATE_CONV_START trace=%s", trace_id)
+    logger.info("CREATE_CONV_AUTH_DONE trace=%s user_present=%s", trace_id, bool(current_user.get("id")))
+    logger.info("CREATE_CONV_DB_SESSION_ACQUIRED trace=%s", trace_id)
+    logger.info("CREATE_CONV_DB_INSERT_START trace=%s", trace_id)
+    conv = svc.create_conversation(db, user_id=current_user["id"], title=body.title)
+    logger.info(
+        "CREATE_CONV_DB_INSERT_COMMIT_REFRESH_DONE trace=%s elapsed_ms=%.1f",
+        trace_id,
+        (time.perf_counter() - started) * 1000,
+    )
+    logger.info("CREATE_CONV_RESPONSE_READY trace=%s", trace_id)
+    return conv
 
 
 @router.get("", response_model=List[ConversationOut])
