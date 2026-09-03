@@ -192,6 +192,7 @@ export const api = {
   // ============================================================
 
   // v2 统一生成接口（所有模式走这一个入口）
+  // 支持性能 Trace：通过 X-Trace-T0 / X-Trace-T1 头传递前端时间点
   async *chatV2Generate(params: {
     conversation_id: number
     message?: string
@@ -201,8 +202,17 @@ export const api = {
     mentioned_character_ids?: number[]
     drama_config?: Record<string, any>
     generation_id?: string
+    traceT0?: number  // T0: 用户点击发送的 performance.now()
+    traceT1?: number  // T1: 前端 POST 发出的 performance.now()
   }) {
     const headers = await getAuthHeaders()
+    // 传递前端 Trace 时间点（后端会在 trace_data 事件中返回）
+    if (params.traceT0 !== undefined) {
+      headers['X-Trace-T0'] = String(params.traceT0)
+    }
+    if (params.traceT1 !== undefined) {
+      headers['X-Trace-T1'] = String(params.traceT1)
+    }
     const res = await fetch(`${API_BASE}/chat/v2/generate`, {
       method: 'POST',
       headers,

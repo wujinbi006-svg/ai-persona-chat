@@ -14,6 +14,13 @@ type View = 'setup' | 'chat'
 // Chat Core 2.0: 默认使用 V2 聊天面板，V1 保留作为回滚保险
 const DEFAULT_USE_V2 = true
 
+// 乐观更新的临时 ID 生成器
+let optimisticIdCounter = 0
+function genOptimisticId(): number {
+  optimisticIdCounter += 1
+  return -Date.now() - optimisticIdCounter
+}
+
 export default function App() {
   const { user, loading, isSupabaseMode, logout } = useAuth()
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -32,14 +39,12 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [hash, setHash] = useState(window.location.hash)
   const abortRef = useRef(false)
-  // Chat Core 2.0: V2 聊天面板开关（默认开启，V1 保留作为回滚保险）
   const [useV2, setUseV2] = useState<boolean>(DEFAULT_USE_V2)
 
   // 戏剧模式状态
   const [isDramaActive, setIsDramaActive] = useState(false)
   const [dramaRound, setDramaRound] = useState(0)
 
-  // 所有 Hooks 必须在条件返回之前调用
   useEffect(() => {
     const onHashChange = () => setHash(window.location.hash)
     window.addEventListener('hashchange', onHashChange)
@@ -50,10 +55,30 @@ export default function App() {
     document.documentElement.classList.toggle('dark', dark)
   }, [dark])
 
+  // ============================================================
+  // 优化1: 聊天列表缓存 + 后台刷新
+  // 先显示 localStorage 缓存，后台获取最新数据
+  // ============================================================
   const loadConversations = useCallback(async () => {
+    // 先从缓存显示（如果有）
+    try {
+      const cached = localStorage.getItem('cached_conversations')
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setConversations(parsed)
+        }
+      }
+    } catch { /* ignore cache errors */ }
+
+    // 后台获取最新数据
     try {
       const list = await api.listConversations()
       setConversations(list)
+      // 更新缓存
+      try {
+        localStorage.setItem('cached_conversations', JSON.stringify(list))
+      } catch { /* ignore */ }
     } catch (e) {
       console.error('加载会话失败', e)
     }
@@ -61,6 +86,10 @@ export default function App() {
 
   useEffect(() => { loadConversations() }, [loadConversations])
 
+  // ============================================================
+  // 优化2: 打开聊天立即显示，后台加载数据
+  // 移除重复的 listCharacters 调用
+  // ============================================================
   const loadConversationData = useCallback(async (id: number) => {
     try {
       const [conv, chars, msgs] = await Promise.all([
@@ -71,8 +100,10 @@ export default function App() {
       setConversations((prev) => prev.map((c) => (c.id === id ? conv : c)))
       setCharacters(chars)
       setMessages(msgs)
+      return chars
     } catch (e) {
       setError('加载数据失败')
+      return []
     }
   }, [])
 
@@ -87,7 +118,11 @@ export default function App() {
     return <LoginPage />
   }
 
+  // ============================================================
+  // 优化3: 打开聊天立即切换UI，后台异步加载
+  // ============================================================
   const handleSelect = async (id: number) => {
+    // 立即切换 UI（不等待数据加载）
     setActiveId(id)
     setError(null)
     setStreamingContent('')
@@ -96,14 +131,21 @@ export default function App() {
     setMode('manual')
     setIsDramaActive(false)
     setDramaRound(0)
-    await loadConversationData(id)
-    const chars = await api.listCharacters(id)
+    setSidebarOpen(false)
+
+    // 如果本地已有该对话的 characters，立即进入聊天视图
+    const existingChars = characters
+    if (existingChars.length > 0) {
+      setView('chat')
+    }
+
+    // 后台加载数据
+    const chars = await loadConversationData(id)
     if (chars.length === 0) {
       setView('setup')
     } else {
       setView('chat')
     }
-    setSidebarOpen(false)
   }
 
   const handleNew = () => {
@@ -121,60 +163,157 @@ export default function App() {
     setSidebarOpen(false)
   }
 
+  // ============================================================
+  // 优化4: 新建会话乐观更新
+  // ============================================================
   const handleCreateConversation = async () => {
+    // 乐观创建临时会话
+    const tempId = genOptimisticId()
+    const tempConv: Conversation = {
+      id: tempId,
+      title: '新对话',
+      persona: '',
+      scene: '',
+      scene_time: '',
+      scene_context: '',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    setConversations((prev) => [tempConv, ...prev])
+    setActiveId(tempId)
+    setCharacters([])
+    setMessages([])
+
     try {
       const conv = await api.createConversation('新对话')
+      // 替换乐观对象
+      setConversations((prev) => prev.map((c) => (c.id === tempId ? conv : c)))
       setActiveId(conv.id)
-      setCharacters([])
-      setMessages([])
-      await loadConversations()
       return conv.id
     } catch (e) {
+      // 失败回滚
+      setConversations((prev) => prev.filter((c) => c.id !== tempId))
+      setActiveId(null)
       setError('创建会话失败')
       return null
     }
   }
 
+  // ============================================================
+  // 优化5: 创建角色乐观更新（最高优先级）
+  // 点击保存立即显示，API 返回后替换，失败 rollback
+  // ============================================================
   const handleAddCharacter = async (name: string, persona: string) => {
-    if (!activeId) {
-      const newId = await handleCreateConversation()
-      if (!newId) return
-      await api.createCharacter(newId, name, persona)
-      const chars = await api.listCharacters(newId)
-      setCharacters(chars)
-      await loadConversations()
-    } else {
-      await api.createCharacter(activeId, name, persona)
-      const chars = await api.listCharacters(activeId)
-      setCharacters(chars)
+    // 1. 立即乐观显示新角色
+    const tempId = genOptimisticId()
+    const tempChar: Character = {
+      id: tempId,
+      conversation_id: activeId || 0,
+      name,
+      persona,
+      sort_order: characters.length,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as Character
+    setCharacters((prev) => [...prev, tempChar])
+
+    let convId = activeId
+    try {
+      // 2. 如果没有 activeId，先创建会话
+      if (!convId) {
+        const newId = await handleCreateConversation()
+        if (!newId) {
+          // 创建会话失败，回滚角色
+          setCharacters((prev) => prev.filter((c) => c.id !== tempId))
+          return
+        }
+        convId = newId
+        // 更新临时角色的 conversation_id
+        setCharacters((prev) => prev.map((c) => (c.id === tempId ? { ...c, conversation_id: newId } : c)))
+      }
+
+      // 3. API 创建角色
+      const created = await api.createCharacter(convId, name, persona)
+
+      // 4. 替换乐观对象为真实对象
+      setCharacters((prev) => prev.map((c) => (c.id === tempId ? created : c)))
+
+      // 5. 更新会话列表的 updated_at（不重新 GET 整个列表）
+      setConversations((prev) => prev.map((c) =>
+        c.id === convId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
+    } catch (e) {
+      // 6. 失败回滚
+      setCharacters((prev) => prev.filter((c) => c.id !== tempId))
+      setError('创建角色失败，请重试')
     }
   }
 
+  // ============================================================
+  // 优化6: 编辑角色乐观更新
+  // ============================================================
   const handleEditCharacter = async (id: number, name: string, persona: string) => {
-    await api.updateCharacter(id, { name, persona })
-    if (activeId) {
-      const chars = await api.listCharacters(activeId)
-      setCharacters(chars)
+    // 保存原始值用于回滚
+    const original = characters.find((c) => c.id === id)
+    // 立即乐观更新
+    setCharacters((prev) => prev.map((c) => (c.id === id ? { ...c, name, persona } : c)))
+
+    try {
+      const updated = await api.updateCharacter(id, { name, persona })
+      setCharacters((prev) => prev.map((c) => (c.id === id ? updated : c)))
+    } catch (e) {
+      // 失败回滚
+      if (original) {
+        setCharacters((prev) => prev.map((c) => (c.id === id ? original : c)))
+      }
+      setError('编辑角色失败')
     }
   }
 
+  // ============================================================
+  // 优化7: 删除角色乐观更新
+  // ============================================================
   const handleDeleteCharacter = async (id: number) => {
-    await api.deleteCharacter(id)
-    if (activeId) {
-      const chars = await api.listCharacters(activeId)
-      setCharacters(chars)
-      if (speaker === id) setSpeaker('user')
+    const original = characters.find((c) => c.id === id)
+    // 立即移除
+    setCharacters((prev) => prev.filter((c) => c.id !== id))
+    if (speaker === id) setSpeaker('user')
+
+    try {
+      await api.deleteCharacter(id)
+    } catch (e) {
+      // 失败恢复
+      if (original) {
+        setCharacters((prev) => [...prev, original].sort((a, b) => a.sort_order - b.sort_order))
+      }
+      setError('删除角色失败')
     }
   }
 
+  // ============================================================
+  // 优化8: 排序乐观更新
+  // ============================================================
   const handleMoveCharacter = async (id: number, direction: 'up' | 'down') => {
+    const idx = characters.findIndex((c) => c.id === id)
+    if (idx < 0) return
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= characters.length) return
+
+    // 保存原始顺序用于回滚
+    const original = [...characters]
+    // 立即乐观交换
+    const updated = [...characters]
+    ;[updated[idx], updated[swapIdx]] = [updated[swapIdx], updated[idx]]
+    // 更新 sort_order
+    updated[idx] = { ...updated[idx], sort_order: idx }
+    updated[swapIdx] = { ...updated[swapIdx], sort_order: swapIdx }
+    setCharacters(updated)
+
     try {
       await api.moveCharacter(id, direction)
-      if (activeId) {
-        const chars = await api.listCharacters(activeId)
-        setCharacters(chars)
-      }
     } catch (e) {
+      // 失败回滚
+      setCharacters(original)
       console.error('移动角色失败', e)
     }
   }
@@ -193,15 +332,37 @@ export default function App() {
     setView('chat')
   }
 
+  // ============================================================
+  // 优化9: 删除会话乐观更新
+  // ============================================================
   const handleDeleteConversation = async (id: number) => {
-    await api.deleteConversation(id)
+    const original = conversations.find((c) => c.id === id)
+    // 立即移除
+    setConversations((prev) => prev.filter((c) => c.id !== id))
     if (activeId === id) {
       setActiveId(null)
       setCharacters([])
       setMessages([])
       setView('setup')
     }
-    await loadConversations()
+
+    try {
+      await api.deleteConversation(id)
+      // 更新缓存
+      try {
+        const cached = localStorage.getItem('cached_conversations')
+        if (cached) {
+          const parsed = JSON.parse(cached)
+          localStorage.setItem('cached_conversations', JSON.stringify(parsed.filter((c: Conversation) => c.id !== id)))
+        }
+      } catch { /* ignore */ }
+    } catch (e) {
+      // 失败恢复
+      if (original) {
+        setConversations((prev) => [...prev, original])
+      }
+      setError('删除会话失败')
+    }
   }
 
   const handleClearMessages = async () => {
@@ -222,6 +383,10 @@ export default function App() {
     }
   }
 
+  // ============================================================
+  // V1 旧聊天路径（保留作为回滚保险，V2 是默认生产链路）
+  // 优化10: SSE 后不重新 GET 全部 messages，直接用 SSE 内容更新
+  // ============================================================
   const handleSendUser = async (msg: string) => {
     if (!activeId) return
     const tempMsg: Message = {
@@ -230,26 +395,47 @@ export default function App() {
     }
     setMessages((prev) => [...prev, tempMsg])
     try {
+      let currentCharId: number | null = null
+      let currentCharName = ''
+      let assistantContent = ''
       for await (const chunk of api.chatStream(activeId, msg, undefined, mode)) {
         handleImageChunk(chunk)
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          currentCharId = chunk.character_id
+          currentCharName = chunk.character_name
+          assistantContent = ''
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
+          assistantContent += chunk.text
           setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
-          const fresh = await api.getMessages(activeId)
-          setMessages(fresh)
+          // 直接 append AI 消息，不重新 GET
+          if (assistantContent.trim() && currentCharId) {
+            const aiMsg: Message = {
+              id: -Date.now() - 1,
+              conversation_id: activeId,
+              character_id: currentCharId,
+              character_name: currentCharName,
+              role: 'assistant',
+              content: assistantContent,
+              image_url: null,
+              created_at: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, aiMsg])
+          }
           setStreamingContent('')
           setStreamingCharacter(null)
+          assistantContent = ''
         } else if (chunk.type === 'error') {
           setError(chunk.message || '发送失败')
           break
         }
       }
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
-      await loadConversations()
+      // 只更新会话 updated_at，不重新加载整个列表
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
     } catch (e: any) {
       setError(e?.message || '发送失败')
       setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id))
@@ -284,9 +470,23 @@ export default function App() {
           break
         }
       }
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
-      await loadConversations()
+      // 直接 append AI 消息
+      if (accumulated.trim()) {
+        const aiMsg: Message = {
+          id: -Date.now() - 2,
+          conversation_id: activeId,
+          character_id: charId,
+          character_name: char.name,
+          role: 'assistant',
+          content: accumulated,
+          image_url: null,
+          created_at: new Date().toISOString(),
+        }
+        setMessages((prev) => [...prev, aiMsg])
+      }
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
     } catch (e: any) {
       setError(e?.message || '生成失败')
     } finally {
@@ -306,25 +506,45 @@ export default function App() {
     abortRef.current = false
 
     try {
+      let currentCharId: number | null = null
+      let currentCharName = ''
+      let assistantContent = ''
       for await (const chunk of api.replyAll(activeId)) {
         if (abortRef.current) { await api.stopGeneration(); break }
         handleImageChunk(chunk)
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          currentCharId = chunk.character_id
+          currentCharName = chunk.character_name
+          assistantContent = ''
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
+          assistantContent += chunk.text
           setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
-          const fresh = await api.getMessages(activeId)
-          setMessages(fresh)
+          if (assistantContent.trim() && currentCharId) {
+            const aiMsg: Message = {
+              id: -Date.now() - 3,
+              conversation_id: activeId,
+              character_id: currentCharId,
+              character_name: currentCharName,
+              role: 'assistant',
+              content: assistantContent,
+              image_url: null,
+              created_at: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, aiMsg])
+          }
+          setStreamingContent('')
+          assistantContent = ''
         } else if (chunk.type === 'error') {
-          setError(chunk.message || '生成失败')
+          setError(chunk.message || '全部回复失败')
           break
         }
       }
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
-      await loadConversations()
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
     } catch (e: any) {
       setError(e?.message || '全部回复失败')
     } finally {
@@ -344,25 +564,45 @@ export default function App() {
     abortRef.current = false
 
     try {
+      let currentCharId: number | null = null
+      let currentCharName = ''
+      let assistantContent = ''
       for await (const chunk of api.discussion(activeId, charIds, rounds)) {
         if (abortRef.current) { await api.stopGeneration(); break }
         handleImageChunk(chunk)
         if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          currentCharId = chunk.character_id
+          currentCharName = chunk.character_name
+          assistantContent = ''
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
+          assistantContent += chunk.text
           setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
-          const fresh = await api.getMessages(activeId)
-          setMessages(fresh)
+          if (assistantContent.trim() && currentCharId) {
+            const aiMsg: Message = {
+              id: -Date.now() - 4,
+              conversation_id: activeId,
+              character_id: currentCharId,
+              character_name: currentCharName,
+              role: 'assistant',
+              content: assistantContent,
+              image_url: null,
+              created_at: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, aiMsg])
+          }
+          setStreamingContent('')
+          assistantContent = ''
         } else if (chunk.type === 'error') {
           setError(chunk.message || '讨论出错')
           break
         }
       }
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
-      await loadConversations()
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
     } catch (e: any) {
       setError(e?.message || '讨论失败')
     } finally {
@@ -388,19 +628,39 @@ export default function App() {
     abortRef.current = false
 
     try {
+      let currentCharId: number | null = null
+      let currentCharName = ''
+      let assistantContent = ''
       for await (const chunk of api.dramaStream(activeId, charIds, rounds, interval, scene, sceneTime, sceneContext)) {
         if (abortRef.current) { await api.dramaStop(); break }
         handleImageChunk(chunk)
         if (chunk.type === 'round_start' && chunk.round) {
           setDramaRound(chunk.round)
         } else if (chunk.type === 'character_start' && chunk.character_id && chunk.character_name) {
+          currentCharId = chunk.character_id
+          currentCharName = chunk.character_name
+          assistantContent = ''
           setStreamingCharacter({ id: chunk.character_id, name: chunk.character_name })
           setStreamingContent('')
         } else if (chunk.type === 'content' && chunk.text) {
+          assistantContent += chunk.text
           setStreamingContent((prev) => prev + chunk.text)
         } else if (chunk.type === 'character_done') {
-          const fresh = await api.getMessages(activeId)
-          setMessages(fresh)
+          if (assistantContent.trim() && currentCharId) {
+            const aiMsg: Message = {
+              id: -Date.now() - 5,
+              conversation_id: activeId,
+              character_id: currentCharId,
+              character_name: currentCharName,
+              role: 'assistant',
+              content: assistantContent,
+              image_url: null,
+              created_at: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, aiMsg])
+          }
+          setStreamingContent('')
+          assistantContent = ''
         } else if (chunk.type === 'drama_done' || chunk.type === 'done') {
           // 戏剧结束
         } else if (chunk.type === 'error') {
@@ -408,10 +668,9 @@ export default function App() {
           break
         }
       }
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
-      await loadConversations()
-      await loadConversationData(activeId)
+      setConversations((prev) => prev.map((c) =>
+        c.id === activeId ? { ...c, updated_at: new Date().toISOString() } : c
+      ))
     } catch (e: any) {
       setError(e?.message || '戏剧失败')
     } finally {
@@ -441,8 +700,6 @@ export default function App() {
     setMessages((prev) => [...prev, tempMsg])
     try {
       await api.dramaInterject(activeId, message)
-      const fresh = await api.getMessages(activeId)
-      setMessages(fresh)
     } catch (e) {
       setError('插话失败')
       setMessages((prev) => prev.filter((m) => m.id !== tempMsg.id))
@@ -505,7 +762,6 @@ export default function App() {
           />
         ) : activeConversation ? (
           useV2 ? (
-            // Chat Core 2.0: V2 统一聊天面板（默认生产链路）
             <ChatPanelV2
               conversationId={activeConversation.id}
               characters={characters}
@@ -513,7 +769,6 @@ export default function App() {
               onBack={() => setView('setup')}
             />
           ) : (
-            // V1 旧聊天面板（保留作为回滚保险）
             <ChatArea
               conversation={activeConversation}
               characters={characters}

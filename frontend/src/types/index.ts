@@ -53,6 +53,7 @@ export interface ChatStreamChunk {
     | 'generation_started' | 'generation_completed' | 'generation_stopped'
     | 'generation_error' | 'generation_conflict'
     | 'character_started' | 'character_completed'
+    | 'trace_data'
   text?: string
   character_id?: number
   character_name?: string
@@ -71,6 +72,8 @@ export interface ChatStreamChunk {
   strategy?: string
   total_speakers?: number
   reason?: string
+  // trace_data 事件携带的性能数据
+  trace?: any
 }
 
 export type Speaker = 'user' | number
