@@ -2,6 +2,18 @@
 
 一个极简的 AI 人格聊天平台。输入一段人格设定，AI 就按照该人格持续和你聊天。
 
+## 快速上手（给AI和人）
+
+1. **读 `AI_HANDOFF.md`** 了解项目全貌、架构、环境变量、已踩过的坑
+2. **复制 `.env.example` 为 `.env`**，填入实际值（LLM API Key、数据库等）
+3. **安装后端依赖**：`cd backend && pip install -r requirements.txt`
+4. **安装前端依赖**：`cd frontend && npm install`
+5. **启动后端**：`cd backend && python -m uvicorn app.main:app --reload --port 8000`
+6. **启动前端**：`cd frontend && npm run dev`
+7. **访问**：http://127.0.0.1:5173
+
+> 生产环境：前端 Vercel + 后端 Render + 数据库 Supabase，push 到 main 自动部署。
+
 ## 核心特性
 
 - **人格即文本**：直接输入一段人格描述，平台原样作为 system prompt 发送，不做任何改写、总结或附加规则
