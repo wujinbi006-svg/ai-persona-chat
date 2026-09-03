@@ -24,7 +24,7 @@ app = FastAPI(title="AI 人格聊天平台", version="3.1.0", lifespan=lifespan)
 # Production Closure: Release Version 标识
 # 从环境变量获取版本号、commit hash、环境信息
 APP_VERSION = os.getenv("APP_VERSION", "Chat Core 2.0")
-APP_COMMIT = os.getenv("APP_COMMIT") or os.getenv("RENDER_GIT_COMMIT") or "unknown"
+APP_COMMIT = os.getenv("RENDER_GIT_COMMIT") or os.getenv("APP_COMMIT") or "unknown"
 APP_ENVIRONMENT = os.getenv("APP_ENVIRONMENT", "production")
 BUILD_TIME = os.getenv("BUILD_TIME") or os.getenv("RENDER_GIT_COMMIT", "")
 
